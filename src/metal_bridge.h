@@ -31,6 +31,7 @@ typedef struct NnMetalBenchmarkResult {
     double elapsed_ms;
     double elapsed_ms_per_iteration;
     double elapsed_ms_per_kernel_repeat;
+    char command_mode[32];
 } NnMetalBenchmarkResult;
 
 int nn_metal_probe(NnMetalProbe *out_probe, char *err, size_t err_len);
@@ -73,6 +74,28 @@ int nn_metal_run_logits_matmul(
 // means repeated command-buffer submission inside one synchronous call, not an
 // asynchronous retained buffer API.
 int nn_metal_benchmark_logits_matmul_persistent(
+    const char *metallib_path,
+    const char *kernel_name,
+    const float *hidden,
+    const float *weights_row_major,
+    float *logits_out,
+    uint32_t rows,
+    uint32_t cols,
+    uint32_t iterations,
+    uint32_t repeat_count,
+    uint8_t use_no_copy_buffers,
+    NnMetalProbe *out_probe,
+    NnMetalSmokeResult *out_result,
+    NnMetalBenchmarkResult *out_benchmark,
+    char *err,
+    size_t err_len
+);
+
+// Benchmark-only variant that encodes all iteration/repeat dispatches into one
+// command buffer before one wait. This reduces CPU command-buffer churn in the
+// measurement loop and reads back logits only once at the end. Same correctness
+// and no-copy lifetime rules as nn_metal_benchmark_logits_matmul_persistent.
+int nn_metal_benchmark_logits_matmul_persistent_batched(
     const char *metallib_path,
     const char *kernel_name,
     const float *hidden,

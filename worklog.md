@@ -812,3 +812,38 @@
 - Note: a verifier subagent checked before the artifact was visible in its workspace and reported the JSON missing. A local reconciliation immediately after full gates confirmed `artifacts/benchmarks/g073_reuse_samples/reuse_samples7.json` exists with size `34953` bytes and passes the assertions above.
 - Decision: keep the evidence milestone. No code, runtime default, kernel selection, or HF bridge behavior changed.
 - Next optimization target: use the medium-confidence evidence to justify a reversible integration change such as making `threadgroup` the explicit default only inside the reusable benchmark wrapper, or instead prototype a lower-dispatch-overhead in-process command sequence while keeping public defaults unchanged.
+
+## 2026-06-10 Resumed ultragoal G074 — opt-in batched persistent Metal timing path
+- Prototyped a benchmark-only command-buffer mode for persistent Metal logits timing.
+- Design:
+  - Existing default persistent benchmark mode remains `per_iter`: one command buffer and wait per benchmark iteration.
+  - New opt-in `--benchmark-command-mode batched` encodes all persistent iteration/repeat dispatches into one command buffer and waits once.
+  - The mode is emitted in direct CLI rows as `persistent_command_mode` and in matrix headers as `benchmark_command_mode`, so timing semantics are auditable and not mixed with prior results.
+  - `scripts/benchmark_metal_logits_reuse.py` now passes through and validates `--benchmark-command-mode per_iter|batched` while preserving its default `per_iter` behavior.
+  - This is benchmark infrastructure only; one-shot correctness, default runtime behavior, HF bridge behavior, and public kernel defaults are unchanged.
+- Validation commands:
+  - `python3 -m py_compile scripts/benchmark_metal_logits.py scripts/benchmark_metal_logits_matrix.py scripts/benchmark_metal_logits_reuse.py scripts/run_alignment_tests.py`
+  - `zig fmt --check src/metal_logits_test.zig`
+  - `zig build -Denable-metal=true`
+  - `zig build -Denable-metal=true metal-lib`
+  - Direct control: `./zig-out/bin/metal_logits_v1 zig-out/metal/kernels.metallib --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk --buffer-mode nocopy --kernel-repeats 5 --benchmark-iters 10 --benchmark-command-mode per_iter --matrix-kernels scalar,threadgroup > artifacts/benchmarks/g074_fast_timing/control_reuse.ndjson`
+  - Direct batched: `./zig-out/bin/metal_logits_v1 zig-out/metal/kernels.metallib --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk --buffer-mode nocopy --kernel-repeats 5 --benchmark-iters 10 --benchmark-command-mode batched --matrix-kernels scalar,threadgroup > artifacts/benchmarks/g074_fast_timing/batched_reuse.ndjson`
+  - Batched sampled wrapper: `uv run python scripts/benchmark_metal_logits_reuse.py --no-build --samples 7 --kernel-repeats 5 --benchmark-iters 10 --benchmark-command-mode batched --kernels scalar,threadgroup --buffer-mode nocopy --out artifacts/benchmarks/g074_fast_timing/batched_reuse_samples7.json`
+  - Per-iteration sampled control: `uv run python scripts/benchmark_metal_logits_reuse.py --no-build --samples 3 --kernel-repeats 5 --benchmark-iters 10 --benchmark-command-mode per_iter --kernels scalar,threadgroup --buffer-mode nocopy --out artifacts/benchmarks/g074_fast_timing/control_reuse_samples3.json`
+  - Existing matrix rollback/control: `uv run python scripts/benchmark_metal_logits_matrix.py --no-build --persistent-only --warmup 0 --repeats 0 --cpu-repeats 1 --kernel-repeats 5 --persistent-iters 10 --persistent-samples 3 --kernels scalar,threadgroup --buffer-modes nocopy --out artifacts/benchmarks/g074_fast_timing/control_persistent_matrix.json --artifact-dir artifacts/benchmarks/g074_fast_timing/control_persistent_runs`
+  - Full verification after review: `zig build`; `zig build -Dtarget=x86_64-linux --summary all`; `zig build -Denable-metal=true metal-smoke`; `zig build -Denable-metal=true metal-logits-test -- --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk --kernel-repeats 2`; `uv run python scripts/run_alignment_tests.py`.
+- Results:
+  - Direct control NDJSON passed with `benchmark_command_mode=per_iter`; scalar `12.465999126434326 ms`, threadgroup `11.019880771636963 ms` persistent per-kernel-repeat.
+  - Direct batched NDJSON passed with `benchmark_command_mode=batched`; scalar `12.260780334472656 ms`, threadgroup `11.267218589782715 ms` persistent per-kernel-repeat.
+  - Batched sampled wrapper passed with `sample_count=7`, `ranking_confidence=medium`, no-copy evidence true, top-1/top-20 pass, expected/actual top-1 `353`, mismatches `0`, and `persistent_command_mode=batched` on every row.
+  - Batched sampled medians: `threadgroup/nocopy` `11.007020473480225 ms`; `scalar/nocopy` `12.436220645904541 ms`.
+  - Per-iteration sampled control passed with `sample_count=3`, `ranking_confidence=low`; medians: `threadgroup/nocopy` `11.18175983428955 ms`; `scalar/nocopy` `12.745740413665771 ms`.
+  - Existing persistent-only matrix rollback/control passed with no-copy, top-k, and mismatch evidence intact.
+  - Full-vocab Metal logits fixture retained `top1_match=true`, `top20_set_match=true`, and mismatches `0`.
+  - HF bridge alignment remained intact for all three required prompts with max absolute logit diff `0.0`; sampling smoke remained `temperature=0.6`, `top_p=0.95`, `top_k=20`, candidate count `20`, selected token `353`.
+- Review:
+  - Architect subagent warned that batching changes benchmark semantics because the existing persistent loop has one command buffer/wait per iteration and already reads back only once at the end. This is why the new path is opt-in and labels command mode explicitly.
+  - Test-engineer subagent supplied direct NDJSON, wrapper, rollback/control, and HF alignment assertions; those assertions were run.
+  - Code-reviewer subagent APPROVED the four-file diff and confirmed default command mode remains `per_iter`, explicit modes are emitted, no-copy/top-k/mismatch evidence is preserved, and wrapper batched output passes validation.
+- Decision: keep the opt-in batched command-buffer timing mode as a measurement probe. Do not treat it as a default promotion or as comparable to prior `per_iter` timings without the command-mode label.
+- Next optimization target: reduce duplication in the Objective-C bridge setup code or add a comparison report that explicitly separates `per_iter` and `batched` timing semantics before considering any benchmark default changes.

@@ -27,6 +27,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--buffer-mode", choices=["copy", "nocopy"], default="nocopy")
     parser.add_argument("--kernel-repeats", type=int, default=5)
     parser.add_argument("--benchmark-iters", type=int, default=10)
+    parser.add_argument("--benchmark-command-mode", choices=["per_iter", "batched"], default="per_iter")
     parser.add_argument(
         "--samples",
         type=int,
@@ -111,6 +112,8 @@ def validate(args: argparse.Namespace, header: dict[str, Any], rows: list[dict[s
         reasons.append("header kernel repeats mismatch")
     if int(header.get("benchmark_iters", -1)) != args.benchmark_iters:
         reasons.append("header benchmark iters mismatch")
+    if header.get("benchmark_command_mode") != args.benchmark_command_mode:
+        reasons.append("header benchmark command mode mismatch")
     if float(header.get("shared_fixture_load_ms", -1.0)) <= 0.0:
         reasons.append("shared fixture load time was not positive")
     for row in rows:
@@ -137,6 +140,8 @@ def validate(args: argparse.Namespace, header: dict[str, Any], rows: list[dict[s
             reasons.append(f"{kernel}: kernel repeats mismatch")
         if int(row.get("benchmark_iters", -1)) != args.benchmark_iters:
             reasons.append(f"{kernel}: benchmark iters mismatch")
+        if row.get("persistent_command_mode") != args.benchmark_command_mode:
+            reasons.append(f"{kernel}: benchmark command mode mismatch")
         if float(row.get("fixture_load_ms", -1.0)) != 0.0:
             reasons.append(f"{kernel}: per-row fixture_load_ms should be 0 for reusable-fixture mode")
         for timing_key in (
@@ -165,6 +170,8 @@ def build_command(args: argparse.Namespace) -> list[str]:
         str(args.kernel_repeats),
         "--benchmark-iters",
         str(args.benchmark_iters),
+        "--benchmark-command-mode",
+        args.benchmark_command_mode,
         "--buffer-mode",
         args.buffer_mode,
         "--matrix-kernels",
@@ -265,7 +272,7 @@ def collect_failure_reasons(samples: list[dict[str, Any]]) -> list[str]:
     first_rows = samples[0]["rows"]
     for sample in samples[1:]:
         header = sample["header"]
-        for key in ("rows", "cols", "buffer_mode", "kernel_repeats", "benchmark_iters"):
+        for key in ("rows", "cols", "buffer_mode", "kernel_repeats", "benchmark_iters", "benchmark_command_mode"):
             if header.get(key) != first_header.get(key):
                 reasons.append(f"sample {sample['sample_index']}: header {key} changed")
         rows = sample["rows"]
@@ -306,6 +313,7 @@ def main() -> None:
             "buffer_mode": args.buffer_mode,
             "kernel_repeats": args.kernel_repeats,
             "benchmark_iters": args.benchmark_iters,
+            "benchmark_command_mode": args.benchmark_command_mode,
         },
         "includes_auto_diagnostic": includes_auto,
         "actual_kernels_seen_by_kernel": actual_kernels_seen(samples),
