@@ -1170,3 +1170,30 @@
   - Verifier returned `APPROVE / PASS`, citing default scalar/copy/full coverage, HF alignment evidence, explicit `threadgroup128` correctness, and valid JSON artifacts.
   - Code-reviewer returned `APPROVE` after the help-text fix, with no findings; it verified opt-in-only scope, fixed-width dispatch, actual-kernel reporting, benchmark validators, and CLI/script help.
 - Decision: keep the opt-in kernel and benchmark plumbing. Do not change defaults or auto-selection. Next work should either probe a more meaningful threadgroup128-friendly kernel/layout refinement with strict rollback criteria, or document no-change if variants stay within noise.
+
+## 2026-06-10 Resumed ultragoal G082 — Rolled back `threadgroup128x4` LM-head refinement
+- Goal: run one small reversible follow-on experiment after G081 by probing a threadgroup128-friendly LM-head refinement while preserving the row-major ABI, scalar/threadgroup/default behavior, full comparison correctness, top1/top20 checks, and HF bridge alignment.
+- Candidate attempted:
+  - Added an explicit `logits_matmul_tg128x4` Metal kernel using the same `hidden`, `weights`, `logits`, and `dims` buffers as the existing LM-head kernels.
+  - The candidate kept fixed 128-thread dispatch and changed only the accumulation loop to process four contiguous columns per thread via `float4` plus a scalar tail.
+  - Temporarily added `threadgroup128x4` labels/allowlists in `src/metal_bridge.m`, `src/metal_logits_test.zig`, and benchmark scripts. Defaults and `auto` were not changed.
+- Correctness evidence before rollback:
+  - `zig fmt --check src/metal_logits_test.zig`
+  - `python3 -m py_compile scripts/benchmark_metal_logits.py scripts/benchmark_metal_logits_matrix.py scripts/benchmark_metal_logits_reuse.py scripts/benchmark_metal_command_modes.py`
+  - `zig build -Denable-metal=true metal-lib`
+  - `zig build -Denable-metal=true`
+  - `zig build -Denable-metal=true metal-logits-test -- --kernel threadgroup128x4 --compare-mode full` passed on the tiny fixture with `actual_kernel="threadgroup128x4"`, `mismatches=0`, `top1_match=true`, and `top20_set_match=true`.
+  - `zig build -Denable-metal=true metal-logits-test -- --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk --kernel threadgroup128x4 --buffer-mode nocopy --kernel-repeats 2 --compare-mode full > artifacts/benchmarks/g082_tg128x4/direct_tg128x4_full.json` passed with `actual_kernel="threadgroup128x4"`, `actual_buffer_mode="nocopy"`, `mismatches=0`, `top1_match=true`, `top20_set_match=true`, and `max_abs_diff=2.3841858e-06`.
+- Benchmark evidence:
+  - `uv run python scripts/benchmark_metal_command_modes.py --no-build --samples 7 --kernel-repeats 5 --benchmark-iters 10 --kernels scalar,threadgroup,threadgroup128,threadgroup128x4 --buffer-mode nocopy --compare-mode full --out artifacts/benchmarks/g082_tg128x4/command_modes_full_samples7.json --artifact-dir artifacts/benchmarks/g082_tg128x4/command_modes_full_samples7_runs`
+  - Report verdict was `pass` with `failure_reasons=[]`; all rows preserved full comparison correctness and actual no-copy evidence.
+  - Per-iter medians (`persistent_ms_per_kernel_repeat`): `threadgroup128x4/nocopy` `11.068401336669922 ms`, `threadgroup/nocopy` `11.092479228973389 ms`, `threadgroup128/nocopy` `11.265058517456055 ms`, `scalar/nocopy` `12.834300994873047 ms`.
+  - Batched medians: `threadgroup128/nocopy` `11.628780364990234 ms`, `threadgroup/nocopy` `11.743159294128418 ms`, `threadgroup128x4/nocopy` `11.888139247894287 ms`, `scalar/nocopy` `13.634500503540039 ms`.
+- Decision and rollback:
+  - The candidate was correct but did not meet the G082 keep threshold. It improved over the best existing per-iter median by only ~0.217% and regressed by ~2.23% versus the best existing batched median, far below the required >=3% median improvement with sample support.
+  - Rolled back all source changes with `git restore metal/vector_add.metal src/metal_bridge.m src/metal_logits_test.zig scripts/benchmark_metal_logits.py scripts/benchmark_metal_logits_matrix.py scripts/benchmark_metal_logits_reuse.py`.
+  - No kernel/default behavior changed. The milestone outcome is a documented no-change rollback, not a performance win.
+- Subagent evidence:
+  - Architect agreed the `float4`/128-thread shape was ABI-safe and opt-in, but benchmark-gated: keep only if it shows a real median win in both modes; otherwise rollback or keep experimental only.
+  - Test-engineer provided default-preservation, tiny/full fixture, HF alignment, and benchmark-matrix validation guidance; the core correctness and benchmark gates above followed that shape with the actual `threadgroup128x4` candidate.
+- Next direction: avoid more near-duplicate 128-thread reductions unless a stronger memory-layout hypothesis is available. The next safe loop should either analyze a true prepacked/tiled layout boundary in read-only form first or move to another measured bottleneck while preserving HF alignment.
