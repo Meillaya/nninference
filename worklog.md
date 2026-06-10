@@ -537,3 +537,42 @@
 - HF bridge alignment remained intact for all three required prompts with max absolute logit diff `0.0`; sampling smoke remained `temperature=0.6`, `top_p=0.95`, `top_k=20`, candidate count `20`, selected token `353`.
 - Decision: keep explicit auto matrix diagnostics as measurement infrastructure. Keep defaults unchanged.
 - Next optimization target: isolate host fixture/load timing further from kernel-loop timing, likely by adding matrix/report fields that rank fixture load, bridge wall, and persistent setup separately for clearer bottleneck targeting.
+
+## 2026-06-10 Resumed ultragoal G066 — timing-breakdown rankings in the Metal matrix
+- Added report-only timing-breakdown rankings to `scripts/benchmark_metal_logits_matrix.py` so future optimization decisions can separate host/fixture/setup noise from kernel-loop behavior.
+- New per-row fields include:
+  - `fixture_load_median_ms`
+  - `host_compare_median_ms`
+  - `persistent_setup_median_ms`
+  - `persistent_wall_ms_per_kernel_repeat`
+- New top-level rankings include:
+  - `ranked_by_bridge_wall_median_ms`
+  - `ranked_by_fixture_load_median_ms`
+  - `ranked_by_command_buffer_per_repeat_median_ms`
+  - `ranked_by_persistent_setup_median_ms`
+  - `ranked_by_persistent_wall_ms_per_kernel_repeat`
+- Validation command:
+  - `uv run python scripts/benchmark_metal_logits_matrix.py --no-build --warmup 1 --repeats 2 --cpu-repeats 1 --kernel-repeats 5 --persistent-iters 2 --persistent-samples 2 --kernels scalar,threadgroup --buffer-modes nocopy --out artifacts/benchmarks/g066_breakdown/matrix_breakdown.json --artifact-dir artifacts/benchmarks/g066_breakdown/runs`
+- Validation result:
+  - Matrix verdict `pass`; both rows preserved top-1/top-20 correctness, `mismatches=0`, and actual no-copy evidence.
+  - Breakdown winners in this validation run:
+    - `ranked_by_bridge_wall_median_ms`: `scalar/nocopy`.
+    - `ranked_by_fixture_load_median_ms`: `scalar/nocopy`.
+    - `ranked_by_command_buffer_per_repeat_median_ms`: `scalar/nocopy`.
+    - `ranked_by_persistent_setup_median_ms`: `threadgroup/nocopy`.
+    - `ranked_by_persistent_wall_ms_per_kernel_repeat`: `threadgroup/nocopy`.
+  - Existing persistent per-kernel-repeat ranking still favored `threadgroup/nocopy` (`13.488 ms`) over `scalar/nocopy` (`15.636 ms`).
+- Interpretation:
+  - The new rankings make the host-vs-kernel split explicit: one-shot/host-heavy metrics may favor scalar in noisy samples, while persistent loop metrics favor threadgroup.
+  - This supports continuing to isolate host overhead before changing any defaults.
+- Verification commands run:
+  - `python3 -m py_compile scripts/benchmark_metal_logits_matrix.py`
+  - The validation matrix command above plus JSON assertions that all new rankings exist.
+  - `zig build`
+  - `zig build -Dtarget=x86_64-linux --summary all`
+  - `zig build -Denable-metal=true metal-smoke`
+  - `zig build -Denable-metal=true metal-logits-test -- --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk --kernel-repeats 2`
+  - `uv run python scripts/run_alignment_tests.py`
+- HF bridge alignment remained intact for all three required prompts with max absolute logit diff `0.0`; sampling smoke remained `temperature=0.6`, `top_p=0.95`, `top_k=20`, candidate count `20`, selected token `353`.
+- Decision: keep the timing-breakdown rankings. No runtime/default behavior changed.
+- Next optimization target: reduce host/fixture dominance in benchmarks, likely by adding a fixture-load amortization or matrix mode that runs multiple variant executions after one build and uses persistent summaries as the primary kernel metric.

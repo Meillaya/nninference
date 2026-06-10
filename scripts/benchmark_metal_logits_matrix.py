@@ -93,6 +93,31 @@ def persistent_per_repeat(report: dict[str, Any]) -> float | None:
     return float(value) if value is not None else None
 
 
+def persistent_summary_ms(report: dict[str, Any], key: str, stat: str = "median_ms") -> float | None:
+    summary = report.get("persistent_metal_summary")
+    if isinstance(summary, dict):
+        metric = summary.get(key)
+        if isinstance(metric, dict) and metric.get(stat) is not None:
+            return float(metric[stat])
+    persistent = report.get("persistent_metal")
+    if not isinstance(persistent, dict):
+        return None
+    record = persistent.get("record")
+    if not isinstance(record, dict):
+        return None
+    fallback_keys = {
+        "setup_ms": "persistent_setup_ms",
+        "persistent_ms_per_kernel_repeat": "persistent_ms_per_kernel_repeat",
+        "wall_ms_per_kernel_repeat": None,
+    }
+    record_key = fallback_keys.get(key)
+    if record_key is None:
+        value = persistent.get(key)
+    else:
+        value = record.get(record_key)
+    return float(value) if value is not None else None
+
+
 def positive_number(value: Any) -> bool:
     return isinstance(value, (int, float)) and value > 0 and value == value and value not in (float("inf"), float("-inf"))
 
@@ -246,11 +271,15 @@ def run_row(args: argparse.Namespace, kernel: str, buffer_mode: str, row_out: Pa
         "wall_median_ms": median_ms(report, "metal_wall_ms"),
         "measured_total_mean_ms": mean_ms(report, "metal_cli_measured_total_ms"),
         "measured_total_median_ms": median_ms(report, "metal_cli_measured_total_ms"),
+        "fixture_load_median_ms": median_ms(report, "metal_cli_fixture_load_ms"),
         "bridge_wall_mean_ms": mean_ms(report, "metal_cli_bridge_wall_ms"),
         "bridge_wall_median_ms": median_ms(report, "metal_cli_bridge_wall_ms"),
+        "host_compare_median_ms": median_ms(report, "metal_cli_host_compare_ms"),
         "command_buffer_per_repeat_mean_ms": mean_ms(report, "metal_command_buffer_per_repeat_ms"),
         "command_buffer_per_repeat_median_ms": median_ms(report, "metal_command_buffer_per_repeat_ms"),
+        "persistent_setup_median_ms": persistent_summary_ms(report, "setup_ms"),
         "persistent_ms_per_kernel_repeat": persistent_per_repeat(report),
+        "persistent_wall_ms_per_kernel_repeat": persistent_summary_ms(report, "wall_ms_per_kernel_repeat"),
         "persistent_metal_summary": report.get("persistent_metal_summary"),
         "actual_used_no_copy_all": report.get("actual_used_no_copy_all"),
         "persistent_actual_used_no_copy": report.get("persistent_actual_used_no_copy"),
@@ -349,6 +378,26 @@ def main() -> None:
         "ranked_by_persistent_ms_per_kernel_repeat": [
             {"kernel": row["kernel"], "buffer_mode": row["buffer_mode"], "persistent_ms_per_kernel_repeat": row["persistent_ms_per_kernel_repeat"], "artifact": row["artifact"]}
             for row in rank(rows, "persistent_ms_per_kernel_repeat")
+        ],
+        "ranked_by_bridge_wall_median_ms": [
+            {"kernel": row["kernel"], "buffer_mode": row["buffer_mode"], "bridge_wall_median_ms": row["bridge_wall_median_ms"], "artifact": row["artifact"]}
+            for row in rank(rows, "bridge_wall_median_ms")
+        ],
+        "ranked_by_fixture_load_median_ms": [
+            {"kernel": row["kernel"], "buffer_mode": row["buffer_mode"], "fixture_load_median_ms": row["fixture_load_median_ms"], "artifact": row["artifact"]}
+            for row in rank(rows, "fixture_load_median_ms")
+        ],
+        "ranked_by_command_buffer_per_repeat_median_ms": [
+            {"kernel": row["kernel"], "buffer_mode": row["buffer_mode"], "command_buffer_per_repeat_median_ms": row["command_buffer_per_repeat_median_ms"], "artifact": row["artifact"]}
+            for row in rank(rows, "command_buffer_per_repeat_median_ms")
+        ],
+        "ranked_by_persistent_setup_median_ms": [
+            {"kernel": row["kernel"], "buffer_mode": row["buffer_mode"], "persistent_setup_median_ms": row["persistent_setup_median_ms"], "artifact": row["artifact"]}
+            for row in rank(rows, "persistent_setup_median_ms")
+        ],
+        "ranked_by_persistent_wall_ms_per_kernel_repeat": [
+            {"kernel": row["kernel"], "buffer_mode": row["buffer_mode"], "persistent_wall_ms_per_kernel_repeat": row["persistent_wall_ms_per_kernel_repeat"], "artifact": row["artifact"]}
+            for row in rank(rows, "persistent_wall_ms_per_kernel_repeat")
         ],
         "interaction": [
             interaction_summary(rows, "measured_total_median_ms"),
