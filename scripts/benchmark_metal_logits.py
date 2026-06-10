@@ -26,7 +26,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--warmup", type=int, default=1)
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--cpu-repeats", type=int, default=2)
-    parser.add_argument("--kernel", choices=["scalar", "threadgroup"], default="scalar")
+    parser.add_argument("--kernel", choices=["scalar", "threadgroup", "auto"], default="scalar")
     parser.add_argument("--buffer-mode", choices=["copy", "nocopy"], default="copy")
     parser.add_argument("--kernel-repeats", type=int, default=5)
     parser.add_argument(
@@ -154,6 +154,26 @@ def run_cpu_fixture(path: Path, repeats: int):
     }
 
 
+def validate_actual_kernel(args: argparse.Namespace, records: list[dict], persistent: tuple[float, dict] | None) -> tuple[str, list[str]]:
+    actual_kernels = [record.get("actual_kernel") for record in records]
+    if persistent is not None:
+        actual_kernels.append(persistent[1].get("actual_kernel"))
+
+    if args.kernel == "auto":
+        missing = [index for index, value in enumerate(actual_kernels) if value not in {"scalar", "threadgroup"}]
+        if missing:
+            raise SystemExit("requested --kernel auto but at least one Metal run did not report a concrete actual_kernel")
+        if len(set(actual_kernels)) != 1:
+            raise SystemExit(f"requested --kernel auto but resolved kernels were inconsistent: {actual_kernels}")
+    else:
+        mismatched = [value for value in actual_kernels if value is not None and value != args.kernel]
+        if mismatched:
+            raise SystemExit(f"requested --kernel {args.kernel} but at least one Metal run reported actual_kernel={mismatched[0]}")
+
+    seen = sorted({value for value in actual_kernels if value is not None})
+    return (seen[0] if len(seen) == 1 else args.kernel), seen
+
+
 def main() -> None:
     args = parse_args()
     ensure_prerequisites(args)
@@ -179,6 +199,7 @@ def main() -> None:
     host_overhead = [wall - kernel for wall, kernel in zip(metal_wall, metal_kernel)]
     no_copy_count = sum(1 for record in records if record.get("used_no_copy_buffers", False))
     persistent_used_no_copy = None if persistent is None else bool(persistent[1].get("used_no_copy_buffers", False))
+    actual_kernel, actual_kernels_seen = validate_actual_kernel(args, records, persistent)
 
     report = {
         "fixture": str(fixture),
@@ -188,6 +209,9 @@ def main() -> None:
         "metal_cli": args.cli,
         "metallib": args.metallib,
         "kernel": args.kernel,
+        "requested_kernel": args.kernel,
+        "actual_kernel": actual_kernel,
+        "actual_kernels_seen": actual_kernels_seen,
         "requested_buffer_mode": args.buffer_mode,
         "buffer_mode": args.buffer_mode,
         "actual_used_no_copy_count": no_copy_count,

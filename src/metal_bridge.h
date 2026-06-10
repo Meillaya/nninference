@@ -34,6 +34,17 @@ typedef struct NnMetalBenchmarkResult {
 
 int nn_metal_probe(NnMetalProbe *out_probe, char *err, size_t err_len);
 
+// Probe a specific logits kernel's compute pipeline without running it. This is
+// intentionally separate from nn_metal_probe because maxTotalThreadsPerThreadgroup
+// is pipeline-specific and is needed for conservative auto-kernel selection.
+int nn_metal_probe_logits_kernel(
+    const char *metallib_path,
+    const char *kernel_name,
+    NnMetalProbe *out_probe,
+    char *err,
+    size_t err_len
+);
+
 int nn_metal_run_vector_add(
     const char *metallib_path,
     const float *a,

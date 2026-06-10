@@ -61,6 +61,51 @@ int nn_metal_probe(NnMetalProbe *out_probe, char *err, size_t err_len) {
     }
 }
 
+int nn_metal_probe_logits_kernel(
+    const char *metallib_path,
+    const char *kernel_name,
+    NnMetalProbe *out_probe,
+    char *err,
+    size_t err_len
+) {
+    @autoreleasepool {
+        nn_clear_error(err, err_len);
+        if (metallib_path == NULL) {
+            nn_set_error(err, err_len, "invalid logits kernel probe arguments");
+            return 10;
+        }
+
+        const char *selected_kernel = nn_logits_kernel_name_or_default(kernel_name);
+        id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+        if (device == nil) {
+            nn_set_error(err, err_len, "MTLCreateSystemDefaultDevice returned nil");
+            return 11;
+        }
+
+        NSError *ns_error = nil;
+        NSString *library_path = [NSString stringWithUTF8String:metallib_path];
+        id<MTLLibrary> library = [device newLibraryWithFile:library_path error:&ns_error];
+        if (library == nil) {
+            nn_set_error(err, err_len, "newLibraryWithFile failed: %s", [[ns_error localizedDescription] UTF8String]);
+            return 12;
+        }
+
+        id<MTLFunction> function = [library newFunctionWithName:[NSString stringWithUTF8String:selected_kernel]];
+        if (function == nil) {
+            nn_set_error(err, err_len, "Metal function %s not found", selected_kernel);
+            return 13;
+        }
+
+        id<MTLComputePipelineState> pipeline = [device newComputePipelineStateWithFunction:function error:&ns_error];
+        if (pipeline == nil) {
+            nn_set_error(err, err_len, "newComputePipelineStateWithFunction failed: %s", [[ns_error localizedDescription] UTF8String]);
+            return 14;
+        }
+        nn_fill_probe(device, pipeline, out_probe);
+        return 0;
+    }
+}
+
 int nn_metal_run_vector_add(
     const char *metallib_path,
     const float *a,

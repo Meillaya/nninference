@@ -375,3 +375,44 @@
   - No-copy has only ~1.8-2.1% persistent-loop effect, so its main win is not kernel math; it is bridge/setup transfer reduction.
 - Decision: do not change defaults in this milestone. The matrix now supports a follow-on goal to promote `threadgroup` as the kernel default **only if** an explicit full verification/review gate accepts the device-specific risk, and to keep `nocopy` opt-in until buffer ownership/alignment portability is resolved.
 - Next optimization target: evaluate a conservative default change or runtime auto-selection policy using the matrix evidence, while preserving `--kernel scalar` and `--buffer-mode copy` rollback paths.
+
+## 2026-06-10 Resumed ultragoal G061 — opt-in Metal logits auto-kernel prototype
+- Added an explicit `--kernel auto` mode for `metal_logits_v1` and `scripts/benchmark_metal_logits.py` without changing no-flag behavior: default CLI and benchmark execution remain `scalar` + `copy`.
+- Auto-kernel selection is conservative and reversible:
+  - Explicit `--kernel scalar` still runs `actual_kernel=scalar`.
+  - Explicit `--kernel threadgroup` still runs `actual_kernel=threadgroup`.
+  - Explicit `--kernel auto` probes the threadgroup LM-head pipeline and selects `threadgroup` only when `maxTotalThreadsPerThreadgroup >= 256`; otherwise it falls back to `scalar`.
+  - Added `nn_metal_probe_logits_kernel` so the capability decision is based on the actual logits pipeline rather than a generic device probe.
+- Reporting and benchmark schema updates:
+  - `metal_logits_v1` JSON now includes both requested `kernel` and resolved `actual_kernel`.
+  - `benchmark_metal_logits.py` now accepts `--kernel auto`, writes `requested_kernel`, `actual_kernel`, and `actual_kernels_seen`, and fails auto-mode runs if any one-shot or persistent record omits a concrete `actual_kernel` or resolves inconsistently.
+  - Existing explicit scalar/threadgroup matrix rows remain comparable; `auto` is a diagnostic opt-in, not a default-promotion or matrix-ranking axis.
+- Review feedback incorporated:
+  - Architect guidance: keep auto opt-in, preserve scalar/threadgroup hard overrides, resolve through capability evidence, report requested vs resolved kernel.
+  - Code-review guidance: require concrete/invariant `actual_kernel` in auto benchmark artifacts and document auto behavior in CLI help.
+- Correctness and smoke evidence:
+  - Default no-flag full-vocab run preserved `kernel=scalar`, `actual_kernel=scalar`, `buffer_mode=copy`, `actual_buffer_mode=copy`, top-1 `353`, top-20 set match `true`, `mismatches=0`.
+  - Explicit scalar full-vocab run preserved `actual_kernel=scalar`, top-1 `353`, top-20 set match `true`, `mismatches=0`.
+  - Explicit threadgroup full-vocab run preserved `actual_kernel=threadgroup`, top-1 `353`, top-20 set match `true`, `mismatches=0`.
+  - Auto full-vocab run on Apple M4 resolved to `actual_kernel=threadgroup`, top-1 `353`, top-20 set match `true`, `mismatches=0`.
+  - Auto persistent run on Apple M4 resolved to `actual_kernel=threadgroup`, top-1 `353`, top-20 set match `true`, `mismatches=0`, persistent per-kernel-repeat `12.709 ms` in the direct CLI sample.
+- Focused benchmark evidence:
+  - `artifacts/benchmarks/g061_auto_kernel/auto_nocopy_benchmark.json`: requested `auto`, resolved `actual_kernel=threadgroup`, `actual_kernels_seen=["threadgroup"]`, `actual_used_no_copy_all=true`, `persistent_actual_used_no_copy=true`, median measured total `526.004 ms`, persistent per-kernel-repeat `15.693 ms`.
+  - `artifacts/benchmarks/g061_auto_kernel/threadgroup_nocopy_benchmark.json`: requested `threadgroup`, resolved `actual_kernel=threadgroup`, `actual_kernels_seen=["threadgroup"]`, `actual_used_no_copy_all=true`, `persistent_actual_used_no_copy=true`, median measured total `540.231 ms`, persistent per-kernel-repeat `15.044 ms`.
+  - `artifacts/benchmarks/g061_auto_kernel/default_required_benchmark.json`: requested/default `scalar`, resolved `actual_kernel=scalar`, median measured total `638.200 ms`, command-buffer per-repeat median `19.222 ms`.
+- Full verification commands run:
+  - `zig fmt src/metal_logits_test.zig`
+  - `python3 -m py_compile scripts/benchmark_metal_logits.py`
+  - `zig build -Denable-metal=true`
+  - Direct CLI full-vocab checks for no-flag default, explicit scalar, explicit threadgroup, auto, and auto persistent.
+  - `uv run python scripts/benchmark_metal_logits.py --warmup 1 --repeats 2 --cpu-repeats 1 --kernel auto --buffer-mode nocopy --kernel-repeats 5 --persistent-iters 3 --out artifacts/benchmarks/g061_auto_kernel/auto_nocopy_benchmark.json`
+  - `uv run python scripts/benchmark_metal_logits.py --warmup 1 --repeats 2 --cpu-repeats 1 --kernel threadgroup --buffer-mode nocopy --kernel-repeats 5 --persistent-iters 3 --out artifacts/benchmarks/g061_auto_kernel/threadgroup_nocopy_benchmark.json`
+  - `zig build`
+  - `zig build -Dtarget=x86_64-linux --summary all`
+  - `zig build -Denable-metal=true metal-smoke`
+  - `zig build -Denable-metal=true metal-logits-test -- --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk --kernel-repeats 2`
+  - `uv run python scripts/run_alignment_tests.py`
+  - `uv run python scripts/benchmark_metal_logits.py --warmup 1 --repeats 2 --cpu-repeats 1 --kernel-repeats 5 --out artifacts/benchmarks/g061_auto_kernel/default_required_benchmark.json`
+- HF bridge alignment remained intact for the three required prompts with max absolute logit diff `0.0`; sampling smoke remained `temperature=0.6`, `top_p=0.95`, `top_k=20`, candidate count `20`, selected token `353`.
+- Decision: keep the auto mode because it is opt-in, auditable, correct, and rollback-safe. Do not promote threadgroup or no-copy defaults from this milestone; use auto only as a diagnostic path for future staged throughput experiments.
+- Next optimization target: reduce repeated auto/benchmark setup overhead by adding a lower-overhead kernel-resolution/probe path or cache so auto diagnostics do not add avoidable library/pipeline setup work to each CLI process.

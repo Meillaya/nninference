@@ -35,11 +35,13 @@ const Fixture = struct {
 const Kernel = enum {
     scalar,
     threadgroup,
+    auto,
 
     fn metalName(self: Kernel) [:0]const u8 {
         return switch (self) {
             .scalar => "logits_matmul",
             .threadgroup => "logits_matmul_tg",
+            .auto => unreachable,
         };
     }
 
@@ -47,6 +49,7 @@ const Kernel = enum {
         return switch (self) {
             .scalar => "scalar",
             .threadgroup => "threadgroup",
+            .auto => "auto",
         };
     }
 };
@@ -75,10 +78,12 @@ const Options = struct {
 
 fn usage() []const u8 {
     return
-    \\metal_logits_v1 <metallib> [--fixture artifacts/.../fixture.bin] [--expect-topk] [--kernel scalar|threadgroup] [--buffer-mode copy|nocopy] [--kernel-repeats N] [--benchmark-iters N]
+    \\metal_logits_v1 <metallib> [--fixture artifacts/.../fixture.bin] [--expect-topk] [--kernel scalar|threadgroup|auto] [--buffer-mode copy|nocopy] [--kernel-repeats N] [--benchmark-iters N]
     \\
     \\Prototype-only CLI for the sidecar Metal LM-head logits projection.
     \\It does not run the transformer or replace infer_cpu_v1's default HF bridge.
+    \\--kernel auto is opt-in: it chooses threadgroup only when the pipeline
+    \\supports its fixed 256-thread layout, otherwise scalar.
     \\--benchmark-iters keeps one fixture load and one Metal buffer setup alive
     \\for N measured command-buffer iterations.
     \\
@@ -138,6 +143,8 @@ fn parseOptions(args: []const []const u8) !Options {
                 opt.kernel = .scalar;
             } else if (std.mem.eql(u8, args[i], "threadgroup")) {
                 opt.kernel = .threadgroup;
+            } else if (std.mem.eql(u8, args[i], "auto")) {
+                opt.kernel = .auto;
             } else {
                 return error.InvalidKernel;
             }
@@ -264,11 +271,12 @@ fn runCase(io: Io, stdout: *Io.Writer, allocator: std.mem.Allocator, metallib_pa
     var benchmark: c.NnMetalBenchmarkResult = std.mem.zeroes(c.NnMetalBenchmarkResult);
     var err: [2048]u8 = std.mem.zeroes([2048]u8);
 
+    const actual_kernel = resolveKernel(metallib_path_z, kernel);
     const bridge_start = Io.Clock.awake.now(io);
     const rc = if (benchmark_iters == 0)
         c.nn_metal_run_logits_matmul(
             metallib_path_z.ptr,
-            kernel.metalName().ptr,
+            actual_kernel.metalName().ptr,
             fixture.hidden.ptr,
             fixture.weights.ptr,
             actual.ptr,
@@ -284,7 +292,7 @@ fn runCase(io: Io, stdout: *Io.Writer, allocator: std.mem.Allocator, metallib_pa
     else
         c.nn_metal_benchmark_logits_matmul_persistent(
             metallib_path_z.ptr,
-            kernel.metalName().ptr,
+            actual_kernel.metalName().ptr,
             fixture.hidden.ptr,
             fixture.weights.ptr,
             actual.ptr,
@@ -343,11 +351,12 @@ fn runCase(io: Io, stdout: *Io.Writer, allocator: std.mem.Allocator, metallib_pa
 
     const actual_buffer_mode = if (result.used_no_copy_buffers != 0) "nocopy" else "copy";
     try stdout.print(
-        "{{\"fixture\":\"{s}\",\"device\":\"{s}\",\"kernel\":\"{s}\",\"buffer_mode\":\"{s}\",\"actual_buffer_mode\":\"{s}\",\"used_no_copy_buffers\":{},\"rows\":{d},\"cols\":{d},\"max_abs_diff\":{d},\"max_rel_diff\":{d},\"mismatches\":{d},\"tolerance_max_abs\":{d},\"tolerance_max_rel\":{d},\"expected_top1\":{d},\"actual_top1\":{d},\"top1_match\":{},\"top20_set_match\":{},\"kernel_repeats\":{d},\"elapsed_ms\":{d},\"elapsed_ms_per_repeat\":{d},\"fixture_load_ms\":{d},\"metal_bridge_wall_ms\":{d},\"host_compare_ms\":{d},\"total_cli_measured_ms\":{d}",
+        "{{\"fixture\":\"{s}\",\"device\":\"{s}\",\"kernel\":\"{s}\",\"actual_kernel\":\"{s}\",\"buffer_mode\":\"{s}\",\"actual_buffer_mode\":\"{s}\",\"used_no_copy_buffers\":{},\"rows\":{d},\"cols\":{d},\"max_abs_diff\":{d},\"max_rel_diff\":{d},\"mismatches\":{d},\"tolerance_max_abs\":{d},\"tolerance_max_rel\":{d},\"expected_top1\":{d},\"actual_top1\":{d},\"top1_match\":{},\"top20_set_match\":{},\"kernel_repeats\":{d},\"elapsed_ms\":{d},\"elapsed_ms_per_repeat\":{d},\"fixture_load_ms\":{d},\"metal_bridge_wall_ms\":{d},\"host_compare_ms\":{d},\"total_cli_measured_ms\":{d}",
         .{
             fixture_name,
             cString(&probe.device_name),
             kernel.label(),
+            actual_kernel.label(),
             buffer_mode.label(),
             actual_buffer_mode,
             result.used_no_copy_buffers != 0,
@@ -384,6 +393,26 @@ fn runCase(io: Io, stdout: *Io.Writer, allocator: std.mem.Allocator, metallib_pa
         );
     }
     try stdout.writeAll("}\n");
+}
+
+fn resolveKernel(metallib_path_z: [:0]const u8, kernel: Kernel) Kernel {
+    if (kernel != .auto) return kernel;
+
+    // Auto is explicit and reversible: keep the CLI default scalar, but let
+    // benchmark callers ask for the current preferred prototype kernel. Select
+    // the threadgroup kernel only when its pipeline proves the fixed 256-thread
+    // layout is supported; otherwise fall back to scalar rather than failing.
+    var probe: c.NnMetalProbe = std.mem.zeroes(c.NnMetalProbe);
+    var err: [2048]u8 = std.mem.zeroes([2048]u8);
+    const rc = c.nn_metal_probe_logits_kernel(
+        metallib_path_z.ptr,
+        Kernel.threadgroup.metalName().ptr,
+        &probe,
+        err[0..].ptr,
+        err.len,
+    );
+    if (rc == 0 and probe.max_threads_per_threadgroup >= 256) return .threadgroup;
+    return .scalar;
 }
 
 fn elapsedMsSince(io: Io, start: Io.Timestamp) f64 {
