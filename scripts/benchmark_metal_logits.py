@@ -31,6 +31,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--compare-mode", "--comparison-mode", choices=["full", "topk"], default="full")
     parser.add_argument("--kernel-repeats", type=int, default=5)
     parser.add_argument(
+        "--benchmark-command-mode",
+        choices=["per_iter", "batched"],
+        default="per_iter",
+        help="Persistent benchmark command-buffer mode to request when --persistent-iters is set",
+    )
+    parser.add_argument(
         "--persistent-iters",
         type=int,
         default=0,
@@ -146,6 +152,8 @@ def run_persistent_metal_once(args: argparse.Namespace) -> tuple[float, dict]:
         str(args.kernel_repeats),
         "--compare-mode",
         args.compare_mode,
+        "--benchmark-command-mode",
+        args.benchmark_command_mode,
         "--benchmark-iters",
         str(args.persistent_iters),
     ]
@@ -208,6 +216,13 @@ def persistent_summary(persistent_runs: list[tuple[float, dict]], args: argparse
         "wall_ms_per_iter": summarize([wall_ms / args.persistent_iters for wall_ms, _ in persistent_runs]),
         "wall_ms_per_kernel_repeat": summarize([wall_ms / (args.persistent_iters * args.kernel_repeats) for wall_ms, _ in persistent_runs]),
         "actual_kernels_seen": sorted({record.get("actual_kernel") for record in records if record.get("actual_kernel") is not None}),
+        "command_modes_seen": sorted(
+            {
+                record.get("persistent_command_mode")
+                for record in records
+                if record.get("persistent_command_mode") is not None
+            }
+        ),
         "used_no_copy_all": all(bool(record.get("used_no_copy_buffers", False)) for record in records),
     }
 
@@ -252,6 +267,17 @@ def main() -> None:
     else:
         metal_wall, metal_kernel, records = run_metal(args)
     persistent_runs = run_persistent_metal(args)
+    if persistent_runs:
+        wrong_command_mode = [
+            record.get("persistent_command_mode")
+            for _, record in persistent_runs
+            if record.get("persistent_command_mode") != args.benchmark_command_mode
+        ]
+        if wrong_command_mode:
+            raise SystemExit(
+                "requested --benchmark-command-mode "
+                f"{args.benchmark_command_mode} but persistent run reported {wrong_command_mode[0]}"
+            )
     persistent = persistent_runs[-1] if persistent_runs else None
     metal_per_repeat = [float(record.get("elapsed_ms_per_repeat", record["elapsed_ms"])) for record in records]
     fixture_load_ms = [float(record["fixture_load_ms"]) for record in records if "fixture_load_ms" in record]
@@ -291,6 +317,7 @@ def main() -> None:
         "requested_buffer_mode": args.buffer_mode,
         "buffer_mode": args.buffer_mode,
         "compare_mode": args.compare_mode,
+        "benchmark_command_mode": args.benchmark_command_mode,
         "actual_used_no_copy_count": no_copy_count,
         "actual_used_no_copy_all": actual_used_no_copy_all,
         "persistent_actual_used_no_copy": persistent_used_no_copy,

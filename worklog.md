@@ -1074,3 +1074,53 @@
   - Test-engineer recommended the direct Zig unit-test path and a rank-based top-k oracle; implemented that stronger oracle and documented the command.
   - Code-reviewer returned `APPROVE`, with no findings; it specifically checked stable top-20 set semantics, tie handling, `NaN`/`-inf` behavior, default compare-mode safety, and performance rationale.
 - Decision: keep the optimization. It removes the measured host top-k validation bottleneck without weakening default full comparison or HF alignment. Remaining throughput focus should move back toward Metal command/kernel behavior because host top-k selection is no longer the dominant validation cost.
+
+## 2026-06-10 Resumed ultragoal G080 — Post-G079 Metal command/kernel throughput pass
+- Goal: after G079 removed host top-k selection as the dominant validation bottleneck, collect post-G079 command/kernel evidence and make only the smallest reversible change that improves measurement fidelity without weakening correctness.
+- Baseline finding:
+  - G079 reduced top-k selection to ~1.0-1.2 ms, while persistent threadgroup/nocopy kernel-repeat medians remained around ~10.7-12.5 ms depending on command mode and sampling.
+  - Subagent architect recommended benchmark-integration boundaries before risky kernel/default changes.
+  - Subagent code-reviewer/kernel review recommended the smallest safe G080 patch: report the bridge-confirmed persistent command mode from `NnMetalBenchmarkResult.command_mode`, and avoid threadgroup-size/specialized-kernel/GPU-topk changes as too broad for this story.
+- Implemented measurement-fidelity changes:
+  - `src/metal_logits_test.zig` now emits `persistent_command_mode` from the Objective-C bridge result (`benchmark.command_mode`) instead of echoing the requested Zig option. Expected output is unchanged when bridge and caller agree, but future bridge/CLI mismatches become visible.
+  - `scripts/benchmark_metal_logits.py` now accepts `--benchmark-command-mode per_iter|batched` for persistent runs, passes it through to `metal_logits_v1`, validates that persistent records report the requested mode, summarizes `command_modes_seen`, and emits top-level `benchmark_command_mode`.
+  - Defaults remain unchanged: benchmark wrapper default command mode is still `per_iter`, default comparison mode is still `full`, CLI full comparison remains the correctness path, and top-k-only remains opt-in.
+- Evidence collection before the patch:
+  - `uv run python scripts/benchmark_metal_command_modes.py --no-build --samples 2 --kernel-repeats 5 --benchmark-iters 10 --kernels scalar,threadgroup --buffer-mode nocopy --compare-mode full --out artifacts/benchmarks/g080_post_topk_command/command_modes_full_samples2.json --artifact-dir artifacts/benchmarks/g080_post_topk_command/command_modes_full_runs`
+  - `uv run python scripts/benchmark_metal_command_modes.py --no-build --samples 2 --kernel-repeats 5 --benchmark-iters 10 --kernels scalar,threadgroup --buffer-mode nocopy --compare-mode topk --out artifacts/benchmarks/g080_post_topk_command/command_modes_topk_samples2.json --artifact-dir artifacts/benchmarks/g080_post_topk_command/command_modes_topk_runs`
+  - Full 2-sample command comparison passed. Threadgroup/nocopy deltas: full batched-minus-per_iter `-0.12887954711914062 ms` per kernel repeat (`-1.19%`); topk `-0.23692965507507324 ms` (`-2.17%`). Scalar/nocopy deltas: full `-0.5312693119049072 ms` (`-4.26%`); topk `-0.2735292911529541 ms` (`-2.22%`). Treated as diagnostic only.
+- Targeted validation after the patch:
+  - `zig fmt src/metal_logits_test.zig`
+  - `python3 -m py_compile scripts/benchmark_metal_logits.py scripts/benchmark_metal_logits_reuse.py scripts/benchmark_metal_command_modes.py scripts/benchmark_metal_logits_matrix.py`
+  - `zig build -Denable-metal=true`
+  - Direct bridge-mode checks:
+    - `./zig-out/bin/metal_logits_v1 zig-out/metal/kernels.metallib --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk --kernel threadgroup --buffer-mode nocopy --kernel-repeats 2 --benchmark-iters 3 --benchmark-command-mode per_iter --compare-mode full > artifacts/benchmarks/g080_post_topk_command/direct_per_iter_full.json`
+    - `./zig-out/bin/metal_logits_v1 zig-out/metal/kernels.metallib --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk --kernel threadgroup --buffer-mode nocopy --kernel-repeats 2 --benchmark-iters 3 --benchmark-command-mode batched --compare-mode full > artifacts/benchmarks/g080_post_topk_command/direct_batched_full.json`
+  - Direct results preserved full correctness with top-1/top-20 true, expected/actual top-1 `353`, and `mismatches=0`; bridge-reported modes matched requests: per_iter and batched respectively.
+  - New wrapper pass-through check:
+    - `uv run python scripts/benchmark_metal_logits.py --no-build --kernel threadgroup --buffer-mode nocopy --kernel-repeats 5 --persistent-iters 10 --persistent-samples 3 --repeats 1 --cpu-repeats 1 --benchmark-command-mode batched --compare-mode full --out artifacts/benchmarks/g080_post_topk_command/benchmark_batched_full.json`
+    - Report emitted top-level `benchmark_command_mode="batched"`, persistent summary `command_modes_seen=["batched"]`, and persistent record `persistent_command_mode="batched"`; correctness remained top-1/top-20 true with `mismatches=0`.
+  - Persistent-only wrapper check:
+    - `uv run python scripts/benchmark_metal_logits.py --no-build --kernel threadgroup --buffer-mode nocopy --kernel-repeats 5 --persistent-iters 10 --persistent-samples 3 --persistent-only --cpu-repeats 1 --benchmark-command-mode batched --compare-mode full --out artifacts/benchmarks/g080_post_topk_command/benchmark_batched_persistent_only_full.json`
+    - Passed with `command_modes_seen=["batched"]`, persistent median `10.743439197540283 ms` per kernel repeat, top-1/top-20 true, and `mismatches=0`.
+  - Higher-sample command-mode full comparison:
+    - `uv run python scripts/benchmark_metal_command_modes.py --no-build --samples 7 --kernel-repeats 5 --benchmark-iters 10 --kernels scalar,threadgroup --buffer-mode nocopy --compare-mode full --out artifacts/benchmarks/g080_post_topk_command/command_modes_full_samples7.json --artifact-dir artifacts/benchmarks/g080_post_topk_command/command_modes_full_samples7_runs`
+    - Passed with medium-confidence child rankings. Threadgroup/nocopy median per-kernel-repeat: per_iter `10.596840381622314 ms`, batched `10.594501495361328 ms`; batched delta `-0.002338886260986328 ms` (`-0.022%`). Scalar/nocopy: per_iter `12.075138092041016 ms`, batched `11.9635009765625 ms`; delta `-0.11163711547851562 ms` (`-0.925%`). Decision: do not flip defaults; the threadgroup signal is effectively tied.
+- Full verification commands:
+  - `zig fmt --check src/metal_logits_test.zig`
+  - `python3 -m py_compile scripts/benchmark_metal_logits.py scripts/benchmark_metal_logits_reuse.py scripts/benchmark_metal_command_modes.py scripts/benchmark_metal_logits_matrix.py scripts/run_alignment_tests.py`
+  - `zig build`
+  - `zig build -Dtarget=x86_64-linux --summary all`
+  - `zig build -Denable-metal=true metal-smoke`
+  - `./zig-out/bin/metal_logits_v1 zig-out/metal/kernels.metallib --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk --kernel threadgroup --buffer-mode nocopy --kernel-repeats 2 --compare-mode full > artifacts/benchmarks/g080_post_topk_command/direct_full_threadgroup_nocopy.json`
+  - `zig build -Denable-metal=true metal-logits-test -- --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk --kernel-repeats 2`
+  - `uv run python scripts/benchmark_metal_logits.py --no-build --warmup 1 --repeats 2 --cpu-repeats 1 --kernel-repeats 5 --out artifacts/benchmarks/g080_post_topk_command/default_full_benchmark.json`
+  - `uv run python scripts/run_alignment_tests.py`
+- Full verification results:
+  - Linux cross build succeeded with `Build Summary: 3/3 steps succeeded`.
+  - Metal smoke reported `mismatches=0`.
+  - Direct full threadgroup/nocopy gate retained full comparison, top-1/top-20 true, expected/actual top-1 `353`, `mismatches=0`, and finite full/top-k timing fields.
+  - Default full Metal logits fixture retained top-1/top-20 checks, expected/actual top-1 `353`, and `mismatches=0`.
+  - Default wrapper full benchmark kept top-level `compare_mode="full"`, `benchmark_command_mode="per_iter"`, scalar/copy defaults, top-1/top-20 true, and `mismatches=0`; CPU numpy mismatches remained `0`.
+  - HF bridge alignment remained intact for all three required prompts with max absolute logit diff `0.0`; sampling smoke remained `temperature=0.6`, `top_p=0.95`, `top_k=20`, candidate count `20`, selected token `353`.
+- Decision: keep G080 as measurement hardening, not a throughput/default change. The post-G079 data does not justify promoting batched command mode or changing kernels/defaults; the safest next optimization should either collect more boundary evidence or create an explicitly opt-in kernel/layout variant with the full correctness matrix.

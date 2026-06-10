@@ -518,7 +518,7 @@ fn runCase(io: Io, stdout: *Io.Writer, allocator: std.mem.Allocator, metallib_pa
             ",\"benchmark_iters\":{d},\"persistent_command_mode\":\"{s}\",\"persistent_setup_ms\":{d},\"persistent_elapsed_ms\":{d},\"persistent_ms_per_iter\":{d},\"persistent_ms_per_kernel_repeat\":{d}",
             .{
                 benchmark.iterations,
-                benchmark_command_mode.label(),
+                cString(&benchmark.command_mode),
                 benchmark.setup_ms,
                 benchmark.elapsed_ms,
                 benchmark.elapsed_ms_per_iteration,
