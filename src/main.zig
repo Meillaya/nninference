@@ -27,18 +27,18 @@ const BridgeMeta = struct {
 
 fn usage() []const u8 {
     return
-        \\infer_cpu_v1 --prompt <text> [--model-dir Qwen3.5-0.8B]
-        \\
-        \\Options:
-        \\  --temperature <float>  Sampling temperature (default 0.6); <=0 implies greedy
-        \\  --top-p <float>        Nucleus sampling cutoff (default 0.95)
-        \\  --top-k <int>          Top-k candidate cap (default 20)
-        \\  --greedy               Deterministic argmax selection
-        \\  --seed <int>           Sampling seed
-        \\  --json                 Emit machine-readable JSON
-        \\  --logits-out <path>    Also write full HF prefill logits as little-endian f32
-        \\  --help                 Show this help
-        \\
+    \\infer_cpu_v1 --prompt <text> [--model-dir Qwen3.5-0.8B]
+    \\
+    \\Options:
+    \\  --temperature <float>  Sampling temperature (default 0.6); <=0 implies greedy
+    \\  --top-p <float>        Nucleus sampling cutoff (default 0.95)
+    \\  --top-k <int>          Top-k candidate cap (default 20)
+    \\  --greedy               Deterministic argmax selection
+    \\  --seed <int>           Sampling seed
+    \\  --json                 Emit machine-readable JSON
+    \\  --logits-out <path>    Also write full HF prefill logits as little-endian f32
+    \\  --help                 Show this help
+    \\
     ;
 }
 
@@ -61,19 +61,33 @@ pub fn main(init: std.process.Init) !void {
             try stdout.writeAll(usage());
             return;
         } else if (std.mem.eql(u8, arg, "--model-dir")) {
-            i += 1; if (i >= args.len) return error.MissingValue; opt.model_dir = args[i];
+            i += 1;
+            if (i >= args.len) return error.MissingValue;
+            opt.model_dir = args[i];
         } else if (std.mem.eql(u8, arg, "--prompt")) {
-            i += 1; if (i >= args.len) return error.MissingValue; opt.prompt = args[i];
+            i += 1;
+            if (i >= args.len) return error.MissingValue;
+            opt.prompt = args[i];
         } else if (std.mem.eql(u8, arg, "--temperature")) {
-            i += 1; if (i >= args.len) return error.MissingValue; opt.temperature = try std.fmt.parseFloat(f64, args[i]);
+            i += 1;
+            if (i >= args.len) return error.MissingValue;
+            opt.temperature = try std.fmt.parseFloat(f64, args[i]);
         } else if (std.mem.eql(u8, arg, "--top-p")) {
-            i += 1; if (i >= args.len) return error.MissingValue; opt.top_p = try std.fmt.parseFloat(f64, args[i]);
+            i += 1;
+            if (i >= args.len) return error.MissingValue;
+            opt.top_p = try std.fmt.parseFloat(f64, args[i]);
         } else if (std.mem.eql(u8, arg, "--top-k")) {
-            i += 1; if (i >= args.len) return error.MissingValue; opt.top_k = try std.fmt.parseInt(usize, args[i], 10);
+            i += 1;
+            if (i >= args.len) return error.MissingValue;
+            opt.top_k = try std.fmt.parseInt(usize, args[i], 10);
         } else if (std.mem.eql(u8, arg, "--seed")) {
-            i += 1; if (i >= args.len) return error.MissingValue; opt.seed = try std.fmt.parseInt(u64, args[i], 10);
+            i += 1;
+            if (i >= args.len) return error.MissingValue;
+            opt.seed = try std.fmt.parseInt(u64, args[i], 10);
         } else if (std.mem.eql(u8, arg, "--logits-out")) {
-            i += 1; if (i >= args.len) return error.MissingValue; opt.logits_out = args[i];
+            i += 1;
+            if (i >= args.len) return error.MissingValue;
+            opt.logits_out = args[i];
         } else if (std.mem.eql(u8, arg, "--greedy")) {
             opt.greedy = true;
         } else if (std.mem.eql(u8, arg, "--json")) {
