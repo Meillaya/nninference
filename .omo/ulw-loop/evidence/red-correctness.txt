@@ -1,0 +1,21 @@
+F
+======================================================================
+FAIL: test_correctness_only_records_alignment_and_zig_build (tests.test_autoptimize.TestClaimBoundaries.test_correctness_only_records_alignment_and_zig_build)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/mei/Projects/nninference/tests/test_autoptimize.py", line 125, in test_correctness_only_records_alignment_and_zig_build
+    self.assert_success(proc)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/Users/mei/Projects/nninference/tests/test_autoptimize.py", line 30, in assert_success
+    self.assertEqual(proc.returncode, 0, msg=f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}")
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 2 != 0 : stdout:
+
+stderr:
+/Users/mei/Projects/nninference/.venv/bin/python3: can't open file '/Users/mei/Projects/nninference/scripts/autoptimize.py': [Errno 2] No such file or directory
+
+
+----------------------------------------------------------------------
+Ran 1 test in 0.013s
+
+FAILED (failures=1)

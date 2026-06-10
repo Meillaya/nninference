@@ -1,0 +1,21 @@
+F
+======================================================================
+FAIL: test_dry_run_writes_artifacts (tests.test_autoptimize.TestDryRunCreatesArtifacts.test_dry_run_writes_artifacts)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/mei/Projects/nninference/tests/test_autoptimize.py", line 46, in test_dry_run_writes_artifacts
+    self.assert_success(proc)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/Users/mei/Projects/nninference/tests/test_autoptimize.py", line 30, in assert_success
+    self.assertEqual(proc.returncode, 0, msg=f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}")
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 2 != 0 : stdout:
+
+stderr:
+/Users/mei/Projects/nninference/.venv/bin/python3: can't open file '/Users/mei/Projects/nninference/scripts/autoptimize.py': [Errno 2] No such file or directory
+
+
+----------------------------------------------------------------------
+Ran 1 test in 0.019s
+
+FAILED (failures=1)

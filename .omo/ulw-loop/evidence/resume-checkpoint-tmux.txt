@@ -1,0 +1,25 @@
+zsh '/tmp/ulw-qa-resume.wQiYw5.zsh'; rc=$?; echo __EXIT:$rc
+Nathans-Mac-mini% zsh '/tmp/ulw-qa-resume.wQiYw5.zsh'; rc=$?; echo __EXIT:$rc
+{
+  "run_id": "ulw-resume",
+  "run_dir": "artifacts/optimization/ulw-resume",
+  "status": "pass"
+}
+{
+  "run_id": "ulw-resume",
+  "run_dir": "artifacts/optimization/ulw-resume",
+  "status": "pass"
+}
+PASS resume-checkpoint
+__EXIT:0
+Nathans-Mac-mini%
+
+
+
+
+
+
+
+
+
+cleanup: tmux kill-session -t ulw-qa-resume; rm -f /tmp/ulw-qa-resume.wQiYw5.zsh; confirmed no session

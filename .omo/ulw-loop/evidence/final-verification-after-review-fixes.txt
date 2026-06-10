@@ -1,0 +1,76 @@
+## py_compile
+## unittest
+...........
+----------------------------------------------------------------------
+Ran 11 tests in 0.851s
+
+OK
+## final dry run
+{
+  "run_id": "final",
+  "run_dir": "artifacts/optimization/final",
+  "status": "pass"
+}
+## final correctness custom
+{
+  "run_id": "final-correctness",
+  "run_dir": "artifacts/optimization/final-correctness",
+  "status": "pass"
+}
+## zig build
+## alignment
+[transformers] The fast path is not available because one of the required library is not installed. Falling back to torch implementation. To install follow https://github.com/fla-org/flash-linear-attention#installation and https://github.com/Dao-AILab/causal-conv1d
+[ERROR] `loss` is part of Qwen3_5CausalLMOutputWithPast.__init__'s signature, but not documented. Make sure to add it to the docstring of the function in /Users/mei/Projects/nninference/.venv/lib/python3.13/site-packages/transformers/models/qwen3_5/modeling_qwen3_5.py.
+[ERROR] `logits` is part of Qwen3_5CausalLMOutputWithPast.__init__'s signature, but not documented. Make sure to add it to the docstring of the function in /Users/mei/Projects/nninference/.venv/lib/python3.13/site-packages/transformers/models/qwen3_5/modeling_qwen3_5.py.
+Loading weights:   0%|          | 0/320 [00:00<?, ?it/s]Loading weights: 100%|██████████| 320/320 [00:00<00:00, 5729.02it/s]
+[transformers] Setting `pad_token_id` to `eos_token_id`:248044 for open-end generation.
+[transformers] Setting `pad_token_id` to `eos_token_id`:248044 for open-end generation.
+[transformers] Setting `pad_token_id` to `eos_token_id`:248044 for open-end generation.
+{
+  "prompts": [
+    {
+      "prompt": "Hi,",
+      "token_id": 353,
+      "decoded": " I",
+      "max_abs_diff": 0.0,
+      "rtol": 0.016,
+      "atol": 1e-05
+    },
+    {
+      "prompt": "The capital of China is",
+      "token_id": 25701,
+      "decoded": " Beijing",
+      "max_abs_diff": 0.0,
+      "rtol": 0.016,
+      "atol": 1e-05
+    },
+    {
+      "prompt": "What is 1+1?",
+      "token_id": 271,
+      "decoded": "\n\n",
+      "max_abs_diff": 0.0,
+      "rtol": 0.016,
+      "atol": 1e-05
+    }
+  ],
+  "sampling_smoke": {
+    "selected_token_id": 353,
+    "hf_forward_argmax_token_id": 353,
+    "hf_generate_token_id": 353,
+    "vocab_size": 248320,
+    "candidate_count": 20,
+    "greedy": false,
+    "temperature": 0.6,
+    "top_p": 0.95,
+    "top_k": 20
+  }
+}
+## tmux leftovers
+## git status
+ M worklog.md
+?? .omo/ulw-loop-brief-inference-opt-harness.md
+?? .omo/ulw-loop/
+?? scripts/autoptimize.py
+?? scripts/autoptimize_lmstudio.py
+?? scripts/autoptimize_report.py
+?? tests/

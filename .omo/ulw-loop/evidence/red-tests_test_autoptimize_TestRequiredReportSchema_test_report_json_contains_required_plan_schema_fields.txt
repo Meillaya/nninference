@@ -1,0 +1,14 @@
+F
+======================================================================
+FAIL: test_report_json_contains_required_plan_schema_fields (tests.test_autoptimize.TestRequiredReportSchema.test_report_json_contains_required_plan_schema_fields)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/mei/Projects/nninference/tests/test_autoptimize.py", line 239, in test_report_json_contains_required_plan_schema_fields
+    self.assertIn(key, report)
+    ~~~~~~~~~~~~~^^^^^^^^^^^^^
+AssertionError: 'created_at' not found in {'run_id': 'schema', 'budget': '3h', 'budget_seconds': 10800, 'dry_run': True, 'correctness': {'planned_commands': [{'name': 'hf_alignment', 'command': 'uv run python scripts/run_alignment_tests.py', 'mode': 'required'}, {'name': 'zig_build', 'command': 'zig build', 'mode': 'required'}]}, 'benchmarks': [{'name': 'HF bridge first-token path', 'scope': 'hf_bridge', 'mode': 'dry_run_plan', 'claim_allowed': True, 'note': 'Current CPU surface delegates model forward to the Hugging Face bridge.'}, {'name': 'Metal LM-head sidecar', 'scope': 'metal_sidecar', 'mode': 'dry_run_plan', 'claim_allowed': False, 'note': 'Sidecar timings are not full native transformer throughput.'}, {'name': 'Microbenchmark fixtures', 'scope': 'microbenchmark', 'mode': 'dry_run_plan', 'claim_allowed': False, 'note': 'Synthetic fixture measurements require explicit labels.'}], 'comparators': {'lmstudio': {'status': 'skipped_with_reason', 'reason': 'lms CLI not found on PATH; LM Studio comparison skipped', 'cli_path': None, 'server_url': None}}, 'claim_boundaries': {'current_scope': 'HF bridge plus Metal LM-head sidecar; not full native transformer inference', 'requires_local_lmstudio_measurement': True, 'sidecar_is_end_to_end': False}, 'artifacts': {'config': 'config.json', 'manifest': 'manifest.json', 'events': 'events.jsonl', 'report_json': 'reports/report.json', 'report_md': 'reports/report.md', 'charts_svg': 'reports/charts.svg', 'report_html': 'reports/report.html'}, 'known_gaps': ['No long-duration optimization loop has been run yet.', 'LM Studio live generation comparison is optional and skipped when unavailable.', 'Current metrics must remain scoped as HF bridge, Metal sidecar, or microbenchmark evidence.']}
+
+----------------------------------------------------------------------
+Ran 1 test in 0.029s
+
+FAILED (failures=1)

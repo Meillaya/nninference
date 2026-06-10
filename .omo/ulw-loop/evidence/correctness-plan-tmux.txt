@@ -1,0 +1,25 @@
+zsh '/tmp/ulw-qa-correctness-plan.jCt83f.zsh'; rc=$?; echo __EXIT:$rc
+Nathans-Mac-mini% zsh '/tmp/ulw-qa-correctness-plan.jCt83f.zsh'; rc=$?; echo __E
+XIT:$rc
+{
+  "run_id": "ulw-correctness-plan",
+  "run_dir": "artifacts/optimization/ulw-correctness-plan",
+  "status": "pass"
+}
+PASS correctness-plan-records-gates
+__EXIT:0
+Nathans-Mac-mini%
+
+
+
+
+
+
+
+
+
+
+
+
+
+cleanup: tmux kill-session -t ulw-qa-correctness-plan; rm -f /tmp/ulw-qa-correctness-plan.jCt83f.zsh; confirmed no session

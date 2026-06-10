@@ -1,0 +1,25 @@
+zsh '/tmp/ulw-qa-correctness-exec.DnbqIe.zsh'; rc=$?; echo __EXIT:$rc
+Nathans-Mac-mini% zsh '/tmp/ulw-qa-correctness-exec.DnbqIe.zsh'; rc=$?; echo __E
+XIT:$rc
+{
+  "run_id": "ulw-correctness-exec",
+  "run_dir": "artifacts/optimization/ulw-correctness-exec",
+  "status": "pass"
+}
+PASS correctness-exec
+__EXIT:0
+Nathans-Mac-mini%
+
+
+
+
+
+
+
+
+
+
+
+
+
+cleanup: tmux kill-session -t ulw-qa-correctness-exec; rm -f /tmp/ulw-qa-correctness-exec.DnbqIe.zsh; confirmed no session

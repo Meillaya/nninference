@@ -1369,3 +1369,61 @@
   - `git status --short`
 - Known gaps:
   - No runtime Zig/Python alignment gates were rerun because this milestone only changed Markdown guidance and `worklog.md`.
+
+## 2026-06-10 ULW loop — autonomous optimization harness skeleton
+- Goal: execute `.omo/plans/20260610-inference-optimization-harness.md` by adding a production-grade harness entrypoint that can create auditable dry-run optimization artifacts before any long optimization loop runs.
+- TDD RED evidence captured before production code:
+  - `.omo/ulw-loop/evidence/red-dryrun.txt` — `scripts/autoptimize.py` missing for dry-run artifact contract.
+  - `.omo/ulw-loop/evidence/red-lmstudio.txt` — `scripts/autoptimize.py` missing for LM Studio skip contract.
+  - `.omo/ulw-loop/evidence/red-correctness.txt` — `scripts/autoptimize.py` missing for correctness-plan contract.
+  - `.omo/ulw-loop/evidence/red-worklog.txt` — worklog missing autoptimize artifact/gap documentation.
+- Implemented `scripts/autoptimize.py` with budget tiers `3h`, `6h`, `9h`, and `12h`, run-specific artifact directories under `artifacts/optimization/<run-id>/`, and dry-run reporting.
+- Implemented `scripts/autoptimize_lmstudio.py` so missing `lms` or unreachable `LM_STUDIO_URL` records `skipped_with_reason` instead of failing the harness.
+- Implemented `scripts/autoptimize_report.py` to write `report.json`, `report.md`, `charts.svg`, and `report.html` while preserving claim boundaries: current measurements are HF bridge, Metal LM-head sidecar, or microbenchmark scoped, not full native transformer throughput.
+- Planned correctness gates recorded by the harness:
+  - `uv run python scripts/run_alignment_tests.py`
+  - `zig build`
+- Artifact paths to verify:
+  - `artifacts/optimization/ulw-smoke/`
+  - `.omo/ulw-loop/evidence/harness-dry-run-tmux.txt`
+  - `.omo/ulw-loop/evidence/lmstudio-skip-tmux.txt`
+  - `.omo/ulw-loop/evidence/report-boundary-tmux.txt`
+  - `.omo/ulw-loop/evidence/correctness-plan-tmux.txt`
+  - `.omo/ulw-loop/evidence/worklog-contract-tmux.txt`
+- Known gaps:
+  - Long-duration 3h/6h/9h/12h optimization loops are not executed yet by this skeleton.
+  - LM Studio live generation comparison is not run when LM Studio is unavailable; the comparator records an explicit skip reason.
+  - The harness reports current repo scope honestly and does not claim full native transformer inference.
+
+## 2026-06-10 ULW loop — reviewer fixes and completion evidence
+- Final reviewer initially rejected the skeleton because it lacked resumable state, rollback/checkpoint lifecycle, executable correctness gates, LM Studio metadata, full report schema/sections, several RED artifacts, additional manual QA scenarios, and a milestone commit.
+- Added blocker-specific RED tests before fixes:
+  - `.omo/ulw-loop/evidence/red-tests_test_autoptimize_TestLifecycleContracts_test_resume_reuses_existing_event_log_and_records_checkpoint.txt`
+  - `.omo/ulw-loop/evidence/red-tests_test_autoptimize_TestLifecycleContracts_test_failed_experiment_can_record_rollback.txt`
+  - `.omo/ulw-loop/evidence/red-tests_test_autoptimize_TestCorrectnessExecution_test_correctness_only_run_executes_commands_when_not_dry_run.txt`
+  - `.omo/ulw-loop/evidence/red-tests_test_autoptimize_TestLMStudioAvailableMetadata_test_fake_lm_studio_cli_records_version_and_process_metadata.txt`
+  - `.omo/ulw-loop/evidence/red-tests_test_autoptimize_TestRequiredReportSchema_test_report_json_contains_required_plan_schema_fields.txt`
+- Implemented reviewer-requested fixes:
+  - `scripts/autoptimize.py` now supports `--resume`, checkpoint event/state writing, simulated rollback evidence, promotion thresholds, custom correctness command execution, and richer report metadata.
+  - `scripts/autoptimize_lmstudio.py` now probes `lms --version`, `lms ps`, optional server reachability, and records live-stat placeholders so unavailable and available-unmeasured states are distinct.
+  - `scripts/autoptimize_report.py` now emits required plan-schema fields, richer benchmark row fields, and required report sections including timeline, promoted/rolled-back changes, charts, reproduction commands, and known gaps.
+- GREEN evidence after fixes:
+  - `.omo/ulw-loop/evidence/green-unittest-after-review-fixes.txt` — `uv run python -m unittest tests.test_autoptimize` ran 11 tests OK.
+- Additional tmux manual QA evidence after reviewer fixes:
+  - `.omo/ulw-loop/evidence/resume-checkpoint-tmux.txt` — resume appends events and leaves a checkpoint record.
+  - `.omo/ulw-loop/evidence/rollback-tmux.txt` — simulated failed experiment records rollback and promotion thresholds.
+  - `.omo/ulw-loop/evidence/schema-html-tmux.txt` — report JSON schema keys and HTML report sections exist.
+  - `.omo/ulw-loop/evidence/correctness-exec-tmux.txt` — harness executes a correctness command and records stdout/exit code.
+- Full final verification after fixes:
+  - `.omo/ulw-loop/evidence/final-verification-after-review-fixes.txt`
+  - `python3 -m py_compile scripts/autoptimize.py scripts/autoptimize_report.py scripts/autoptimize_lmstudio.py tests/test_autoptimize.py`
+  - `uv run python -m unittest tests.test_autoptimize`
+  - `uv run python scripts/autoptimize.py --budget 3h --run-id final --dry-run --output-dir artifacts/optimization`
+  - `uv run python scripts/autoptimize.py --budget 3h --run-id final-correctness --correctness-only --command "python3 -c 'print(42)'" --output-dir artifacts/optimization`
+  - `zig build`
+  - `uv run python scripts/run_alignment_tests.py`
+- Alignment remained exact for the canonical prompts with max absolute logit diff `0.0`; sampling smoke remained `temperature=0.6`, `top_p=0.95`, `top_k=20`, and candidate count `20`.
+- Known gaps:
+  - The harness now provides lifecycle scaffolding and a simulated rollback path, but real autonomous code-edit optimization experiments are still a future milestone.
+  - LM Studio live token generation is not measured unless a local LM Studio server/model is available and a future run enables that adapter.
+  - Long-duration `3h`/`6h`/`9h`/`12h` optimization passes were not run during this implementation milestone; only smoke/dry-run/focused correctness execution was run.

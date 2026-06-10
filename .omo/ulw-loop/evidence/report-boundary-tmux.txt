@@ -1,0 +1,25 @@
+zsh '/tmp/ulw-qa-report-boundary.BhzBvj.zsh'; rc=$?; echo __EXIT:$rc
+Nathans-Mac-mini% zsh '/tmp/ulw-qa-report-boundary.BhzBvj.zsh'; rc=$?; echo __EX
+IT:$rc
+{
+  "run_id": "ulw-report-boundary",
+  "run_dir": "artifacts/optimization/ulw-report-boundary",
+  "status": "pass"
+}
+PASS report-claim-boundaries
+__EXIT:0
+Nathans-Mac-mini%
+
+
+
+
+
+
+
+
+
+
+
+
+
+cleanup: tmux kill-session -t ulw-qa-report-boundary; rm -f /tmp/ulw-qa-report-boundary.BhzBvj.zsh; confirmed no session
