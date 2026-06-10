@@ -605,3 +605,39 @@
 - HF bridge alignment remained intact for all three required prompts with max absolute logit diff `0.0`; sampling smoke remained `temperature=0.6`, `top_p=0.95`, `top_k=20`, candidate count `20`, selected token `353`.
 - Decision: keep bottleneck summary. No runtime/default behavior changed.
 - Next optimization target: reduce fixture-load dominance in benchmark decision loops, likely with an in-process multi-variant benchmark path or fixture reuse strategy rather than further kernel changes.
+
+## 2026-06-10 Resumed ultragoal G068 — persistent-only Metal benchmark mode
+- Added an opt-in `--persistent-only` mode to `scripts/benchmark_metal_logits.py`.
+- Behavior:
+  - Skips one-shot CLI repeat measurements and emits `null` one-shot summaries (`metal_wall_ms`, command-buffer summaries, fixture-load/bridge/host-compare/measured-total summaries).
+  - Requires `--persistent-iters` so correctness/timing evidence comes from persistent Metal records.
+  - Keeps default behavior unchanged when `--persistent-only` is omitted.
+  - Uses the persistent record as `metal_last_record` in persistent-only mode so existing correctness checks can still inspect top-1, top-20, mismatches, dimensions, no-copy, and actual-kernel evidence.
+  - Tightened persistent-only validation after review: every persistent-only Metal run must report concrete `actual_kernel` evidence (`scalar` or `threadgroup`), and matrix rows require matching top-level, seen-set, and last-record kernel evidence.
+- Added `--persistent-only` pass-through to `scripts/benchmark_metal_logits_matrix.py`.
+- Matrix behavior:
+  - Persistent-only rows skip one-shot wall/per-repeat sample-count checks because those fields are intentionally absent.
+  - Persistent correctness, actual kernel, no-copy, top-1/top-20, and mismatch checks still run.
+  - Measured-total rankings are empty by design; persistent rankings remain populated.
+- Validation commands:
+  - `python3 -m py_compile scripts/benchmark_metal_logits.py scripts/benchmark_metal_logits_matrix.py`
+  - `uv run python scripts/benchmark_metal_logits.py --no-build --persistent-only --repeats 0 --warmup 0 --cpu-repeats 1 --kernel threadgroup --buffer-mode nocopy --kernel-repeats 5 --persistent-iters 3 --persistent-samples 2 --out artifacts/benchmarks/g068_persistent_only/threadgroup_only_after_review.json`
+  - JSON assertions on `threadgroup_only_after_review.json`: `persistent_only=true`, one-shot wall summary is `null`, `actual_kernel=threadgroup`, `actual_kernels_seen=[threadgroup]`, last record reports `actual_kernel=threadgroup`, top-1 matches, mismatches are `0`, and persistent no-copy evidence is true.
+  - `uv run python scripts/benchmark_metal_logits_matrix.py --no-build --persistent-only --warmup 0 --repeats 0 --cpu-repeats 1 --kernel-repeats 5 --persistent-iters 3 --persistent-samples 2 --kernels scalar,threadgroup --buffer-modes nocopy --out artifacts/benchmarks/g068_persistent_only/matrix_persistent_only_after_review.json --artifact-dir artifacts/benchmarks/g068_persistent_only/runs_after_review`
+  - JSON assertions on `matrix_persistent_only_after_review.json`: verdict `pass`, `settings.persistent_only=true`, persistent ranking populated, measured-total ranking empty, each row reports matching top-level/seen-set/last-record `actual_kernel` evidence.
+  - Default/non-persistent sanity command: `uv run python scripts/benchmark_metal_logits.py --warmup 1 --repeats 2 --cpu-repeats 1 --kernel-repeats 5 --out artifacts/benchmarks/g068_persistent_only/default_benchmark.json`; default path reported `persistent_only=false`, two wall samples, scalar actual kernel, top-1 match, mismatches `0`.
+  - `zig build`
+  - `zig build -Dtarget=x86_64-linux --summary all`
+  - `zig build -Denable-metal=true metal-smoke`
+  - `zig build -Denable-metal=true metal-logits-test -- --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk --kernel-repeats 2`
+  - `uv run python scripts/run_alignment_tests.py`
+- Validation results:
+  - Direct persistent-only threadgroup/nocopy sample passed; persistent per-kernel-repeat median after the actual-kernel evidence fix was `13.156 ms`.
+  - Persistent-only scalar/threadgroup nocopy matrix passed; persistent ranking favored `threadgroup/nocopy` (`12.525 ms` per kernel repeat) over `scalar/nocopy` (`13.615 ms` per kernel repeat) in the after-review run.
+  - Standard Metal logits test retained top-1 match (`353`), top-20 set match, and mismatches `0`.
+  - HF bridge alignment remained intact for all three required prompts with max absolute logit diff `0.0`; sampling smoke remained `temperature=0.6`, `top_p=0.95`, `top_k=20`, candidate count `20`, selected token `353`.
+- Review:
+  - A code-reviewer subagent found one medium issue: persistent-only explicit-kernel rows could pass without actual-kernel evidence if the CLI schema regressed.
+  - The issue was fixed by requiring concrete actual-kernel reports in persistent-only mode and asserting them in the matrix validator.
+- Decision: keep persistent-only benchmark mode as measurement infrastructure. It reduces one-shot fixture-load repetition in matrix decision loops, while still loading the fixture once per persistent sample subprocess. No runtime inference/default behavior changed.
+- Next optimization target: run a slightly larger persistent-only evidence matrix to decide whether threadgroup should become the preferred benchmark focus, then consider in-process fixture reuse or native multi-variant benchmarking to remove the remaining per-subprocess fixture load.

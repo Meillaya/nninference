@@ -41,6 +41,11 @@ def parse_args() -> argparse.Namespace:
         default=1,
         help="Number of persistent benchmark samples to collect when --persistent-iters is set",
     )
+    parser.add_argument(
+        "--persistent-only",
+        action="store_true",
+        help="Skip one-shot CLI repeat measurements and rely on persistent benchmark records for correctness/timing",
+    )
     parser.add_argument("--no-build", action="store_true", help="Skip prerequisite zig build steps")
     return parser.parse_args()
 
@@ -77,6 +82,10 @@ def summarize(values: list[float]) -> dict[str, float]:
         "max_ms": max(values),
         "median_ms": statistics.median(values),
     }
+
+
+def summarize_or_none(values: list[float]) -> dict[str, float] | None:
+    return summarize(values) if values else None
 
 
 def run_metal(args: argparse.Namespace) -> tuple[list[float], list[float], list[dict]]:
@@ -188,6 +197,11 @@ def validate_actual_kernel(args: argparse.Namespace, records: list[dict], persis
     actual_kernels = [record.get("actual_kernel") for record in records]
     actual_kernels.extend(record.get("actual_kernel") for _, record in persistent_runs)
 
+    if args.persistent_only:
+        missing = [index for index, value in enumerate(actual_kernels) if value not in {"scalar", "threadgroup"}]
+        if missing:
+            raise SystemExit("--persistent-only requires every persistent Metal run to report a concrete actual_kernel")
+
     if args.kernel == "auto":
         missing = [index for index, value in enumerate(actual_kernels) if value not in {"scalar", "threadgroup"}]
         if missing:
@@ -205,6 +219,8 @@ def validate_actual_kernel(args: argparse.Namespace, records: list[dict], persis
 
 def main() -> None:
     args = parse_args()
+    if args.persistent_only and args.persistent_iters <= 0:
+        raise SystemExit("--persistent-only requires --persistent-iters")
     ensure_prerequisites(args)
 
     fixture = Path(args.fixture)
@@ -212,7 +228,10 @@ def main() -> None:
     out.parent.mkdir(parents=True, exist_ok=True)
 
     rows, cols, *_ = load_fixture_views(fixture)
-    metal_wall, metal_kernel, records = run_metal(args)
+    if args.persistent_only:
+        metal_wall, metal_kernel, records = [], [], []
+    else:
+        metal_wall, metal_kernel, records = run_metal(args)
     persistent_runs = run_persistent_metal(args)
     persistent = persistent_runs[-1] if persistent_runs else None
     metal_per_repeat = [float(record.get("elapsed_ms_per_repeat", record["elapsed_ms"])) for record in records]
@@ -231,6 +250,8 @@ def main() -> None:
     persistent_used_no_copy = None if persistent is None else bool(persistent[1].get("used_no_copy_buffers", False))
     actual_kernel, actual_kernels_seen = validate_actual_kernel(args, records, persistent_runs)
     persistent_samples_summary = persistent_summary(persistent_runs, args)
+    metal_last_record = records[-1] if records else (persistent[1] if persistent is not None else None)
+    actual_used_no_copy_all = None if not records else no_copy_count == len(records)
 
     report = {
         "fixture": str(fixture),
@@ -243,21 +264,22 @@ def main() -> None:
         "requested_kernel": args.kernel,
         "actual_kernel": actual_kernel,
         "actual_kernels_seen": actual_kernels_seen,
+        "persistent_only": args.persistent_only,
         "requested_buffer_mode": args.buffer_mode,
         "buffer_mode": args.buffer_mode,
         "actual_used_no_copy_count": no_copy_count,
-        "actual_used_no_copy_all": no_copy_count == len(records),
+        "actual_used_no_copy_all": actual_used_no_copy_all,
         "persistent_actual_used_no_copy": persistent_used_no_copy,
-        "metal_wall_ms": summarize(metal_wall),
+        "metal_wall_ms": summarize_or_none(metal_wall),
         "kernel_repeats_per_cli_run": args.kernel_repeats,
-        "metal_command_buffer_total_ms": summarize(metal_kernel),
-        "metal_command_buffer_per_repeat_ms": summarize(metal_per_repeat),
-        "metal_host_load_and_transfer_overhead_ms": summarize(host_overhead),
-        "metal_cli_fixture_load_ms": summarize(fixture_load_ms) if fixture_load_ms else None,
-        "metal_cli_bridge_wall_ms": summarize(bridge_wall_ms) if bridge_wall_ms else None,
-        "metal_cli_host_compare_ms": summarize(host_compare_ms) if host_compare_ms else None,
-        "metal_cli_measured_total_ms": summarize(measured_total_ms) if measured_total_ms else None,
-        "metal_last_record": records[-1],
+        "metal_command_buffer_total_ms": summarize_or_none(metal_kernel),
+        "metal_command_buffer_per_repeat_ms": summarize_or_none(metal_per_repeat),
+        "metal_host_load_and_transfer_overhead_ms": summarize_or_none(host_overhead),
+        "metal_cli_fixture_load_ms": summarize_or_none(fixture_load_ms),
+        "metal_cli_bridge_wall_ms": summarize_or_none(bridge_wall_ms),
+        "metal_cli_host_compare_ms": summarize_or_none(host_compare_ms),
+        "metal_cli_measured_total_ms": summarize_or_none(measured_total_ms),
+        "metal_last_record": metal_last_record,
         "persistent_metal": None
         if persistent is None
         else {

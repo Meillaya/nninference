@@ -48,6 +48,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--kernel-repeats", type=int, default=5)
     parser.add_argument("--persistent-iters", type=int, default=3)
     parser.add_argument("--persistent-samples", type=int, default=1)
+    parser.add_argument("--persistent-only", action="store_true", help="Skip one-shot row measurements and rank persistent samples only")
     parser.add_argument("--no-build", action="store_true", help="Skip the one upfront Metal build")
     return parser.parse_args()
 
@@ -126,8 +127,9 @@ def row_passed(report: dict[str, Any], kernel: str, buffer_mode: str, repeats: i
     reasons: list[str] = []
     record = report.get("metal_last_record", {})
     cpu = report.get("cpu_reference", {})
-    wall = report.get("metal_wall_ms", {})
-    per_repeat = report.get("metal_command_buffer_per_repeat_ms", {})
+    wall = report.get("metal_wall_ms") or {}
+    per_repeat = report.get("metal_command_buffer_per_repeat_ms") or {}
+    persistent_only = bool(report.get("persistent_only", False))
 
     if report.get("kernel") != kernel:
         reasons.append(f"top-level kernel={report.get('kernel')} expected={kernel}")
@@ -139,6 +141,10 @@ def row_passed(report: dict[str, Any], kernel: str, buffer_mode: str, repeats: i
         if not actual_kernels_seen or any(item not in {"scalar", "threadgroup"} for item in actual_kernels_seen):
             reasons.append(f"auto row reported invalid actual_kernels_seen={actual_kernels_seen}")
     else:
+        if persistent_only and actual_kernel is None:
+            reasons.append("persistent-only row did not report a concrete actual_kernel")
+        if persistent_only and not actual_kernels_seen:
+            reasons.append("persistent-only row did not report actual_kernels_seen")
         if actual_kernel is not None and actual_kernel != kernel:
             reasons.append(f"actual_kernel={actual_kernel} expected={kernel}")
         if actual_kernels_seen and any(item != kernel for item in actual_kernels_seen):
@@ -151,8 +157,11 @@ def row_passed(report: dict[str, Any], kernel: str, buffer_mode: str, repeats: i
     if kernel == "auto":
         if record_actual_kernel not in {"scalar", "threadgroup"}:
             reasons.append(f"auto last record reported non-concrete actual_kernel={record_actual_kernel}")
-    elif record_actual_kernel is not None and record_actual_kernel != kernel:
-        reasons.append(f"last-record actual_kernel={record_actual_kernel} expected={kernel}")
+    else:
+        if persistent_only and record_actual_kernel is None:
+            reasons.append("persistent-only last record did not report a concrete actual_kernel")
+        elif record_actual_kernel is not None and record_actual_kernel != kernel:
+            reasons.append(f"last-record actual_kernel={record_actual_kernel} expected={kernel}")
     if record.get("rows") != report.get("rows") or record.get("cols") != report.get("cols"):
         reasons.append("last-record dimensions mismatch report dimensions")
     if not record.get("top1_match", False):
@@ -171,16 +180,22 @@ def row_passed(report: dict[str, Any], kernel: str, buffer_mode: str, repeats: i
         reasons.append("top-level kernel repeats mismatch")
     if int(record.get("kernel_repeats", -1)) != kernel_repeats:
         reasons.append("last-record kernel repeats mismatch")
-    if int(wall.get("count", -1)) < repeats:
+    if not persistent_only and int(wall.get("count", -1)) < repeats:
         reasons.append("wall sample count below requested repeats")
-    for label, value in (
-        ("wall median", wall.get("median_ms")),
-        ("command per-repeat median", per_repeat.get("median_ms")),
-        ("command per-repeat min", per_repeat.get("min_ms")),
-        ("command per-repeat max", per_repeat.get("max_ms")),
+    timing_checks = [
         ("elapsed", record.get("elapsed_ms")),
         ("elapsed per-repeat", record.get("elapsed_ms_per_repeat")),
-    ):
+    ]
+    if not persistent_only:
+        timing_checks.extend(
+            [
+                ("wall median", wall.get("median_ms")),
+                ("command per-repeat median", per_repeat.get("median_ms")),
+                ("command per-repeat min", per_repeat.get("min_ms")),
+                ("command per-repeat max", per_repeat.get("max_ms")),
+            ]
+        )
+    for label, value in timing_checks:
         if not positive_number(value):
             reasons.append(f"invalid timing: {label}")
 
@@ -192,9 +207,9 @@ def row_passed(report: dict[str, Any], kernel: str, buffer_mode: str, repeats: i
         if record.get("actual_buffer_mode") != "copy" or record.get("used_no_copy_buffers") is not False:
             reasons.append("copy last record actual mode mismatch")
     else:
-        if not report.get("actual_used_no_copy_all", False):
+        if not persistent_only and not report.get("actual_used_no_copy_all", False):
             reasons.append("not all one-shot runs used no-copy buffers")
-        if report.get("actual_used_no_copy_count") != wall.get("count"):
+        if not persistent_only and report.get("actual_used_no_copy_count") != wall.get("count"):
             reasons.append("no-copy actual count differs from wall count")
         if report.get("persistent_actual_used_no_copy") is False:
             reasons.append("persistent run did not use no-copy buffers")
@@ -246,6 +261,8 @@ def run_row(args: argparse.Namespace, kernel: str, buffer_mode: str, row_out: Pa
         str(args.persistent_samples),
         "--no-build",
     ]
+    if args.persistent_only:
+        cmd.append("--persistent-only")
     proc = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if proc.returncode != 0:
         return {
@@ -461,6 +478,7 @@ def main() -> None:
             "kernel_repeats": args.kernel_repeats,
             "persistent_iters": args.persistent_iters,
             "persistent_samples": args.persistent_samples,
+            "persistent_only": args.persistent_only,
         },
     }
     out.write_text(json.dumps(summary, indent=2) + "\n")
