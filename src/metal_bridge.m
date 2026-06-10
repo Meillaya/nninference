@@ -44,8 +44,71 @@ static const char *nn_logits_kernel_name_or_default(const char *kernel_name) {
     return kernel_name;
 }
 
+static bool nn_logits_kernel_is_auto(const char *kernel_name) {
+    return strcmp(kernel_name, "auto") == 0;
+}
+
 static bool nn_logits_kernel_is_threadgroup(const char *kernel_name) {
     return strcmp(kernel_name, "logits_matmul_tg") == 0;
+}
+
+static const char *nn_logits_kernel_label(const char *kernel_name) {
+    if (nn_logits_kernel_is_threadgroup(kernel_name)) return "threadgroup";
+    return "scalar";
+}
+
+static void nn_fill_actual_kernel(NnMetalSmokeResult *result, const char *selected_kernel) {
+    if (result == NULL) return;
+    strncpy(result->actual_kernel_name, nn_logits_kernel_label(selected_kernel), sizeof(result->actual_kernel_name) - 1);
+}
+
+static int nn_create_logits_pipeline(
+    id<MTLDevice> device,
+    id<MTLLibrary> library,
+    const char *requested_kernel,
+    id<MTLComputePipelineState> *out_pipeline,
+    const char **out_selected_kernel,
+    char *err,
+    size_t err_len,
+    int function_error_code,
+    int pipeline_error_code
+) {
+    const char *selected_kernel = requested_kernel;
+    id<MTLComputePipelineState> pipeline = nil;
+
+    if (nn_logits_kernel_is_auto(requested_kernel)) {
+        selected_kernel = "logits_matmul_tg";
+        id<MTLFunction> tg_function = [library newFunctionWithName:[NSString stringWithUTF8String:selected_kernel]];
+        if (tg_function != nil) {
+            NSError *tg_error = nil;
+            id<MTLComputePipelineState> tg_pipeline = [device newComputePipelineStateWithFunction:tg_function error:&tg_error];
+            if (tg_pipeline != nil && [tg_pipeline maxTotalThreadsPerThreadgroup] >= 256) {
+                pipeline = tg_pipeline;
+            }
+        }
+        if (pipeline == nil) {
+            selected_kernel = "logits_matmul";
+        }
+    }
+
+    if (pipeline == nil) {
+        NSError *ns_error = nil;
+        id<MTLFunction> function = [library newFunctionWithName:[NSString stringWithUTF8String:selected_kernel]];
+        if (function == nil) {
+            nn_set_error(err, err_len, "Metal function %s not found", selected_kernel);
+            return function_error_code;
+        }
+
+        pipeline = [device newComputePipelineStateWithFunction:function error:&ns_error];
+        if (pipeline == nil) {
+            nn_set_error(err, err_len, "newComputePipelineStateWithFunction failed: %s", [[ns_error localizedDescription] UTF8String]);
+            return pipeline_error_code;
+        }
+    }
+
+    *out_pipeline = pipeline;
+    *out_selected_kernel = selected_kernel;
+    return 0;
 }
 
 int nn_metal_probe(NnMetalProbe *out_probe, char *err, size_t err_len) {
@@ -57,51 +120,6 @@ int nn_metal_probe(NnMetalProbe *out_probe, char *err, size_t err_len) {
             return 1;
         }
         nn_fill_probe(device, nil, out_probe);
-        return 0;
-    }
-}
-
-int nn_metal_probe_logits_kernel(
-    const char *metallib_path,
-    const char *kernel_name,
-    NnMetalProbe *out_probe,
-    char *err,
-    size_t err_len
-) {
-    @autoreleasepool {
-        nn_clear_error(err, err_len);
-        if (metallib_path == NULL) {
-            nn_set_error(err, err_len, "invalid logits kernel probe arguments");
-            return 10;
-        }
-
-        const char *selected_kernel = nn_logits_kernel_name_or_default(kernel_name);
-        id<MTLDevice> device = MTLCreateSystemDefaultDevice();
-        if (device == nil) {
-            nn_set_error(err, err_len, "MTLCreateSystemDefaultDevice returned nil");
-            return 11;
-        }
-
-        NSError *ns_error = nil;
-        NSString *library_path = [NSString stringWithUTF8String:metallib_path];
-        id<MTLLibrary> library = [device newLibraryWithFile:library_path error:&ns_error];
-        if (library == nil) {
-            nn_set_error(err, err_len, "newLibraryWithFile failed: %s", [[ns_error localizedDescription] UTF8String]);
-            return 12;
-        }
-
-        id<MTLFunction> function = [library newFunctionWithName:[NSString stringWithUTF8String:selected_kernel]];
-        if (function == nil) {
-            nn_set_error(err, err_len, "Metal function %s not found", selected_kernel);
-            return 13;
-        }
-
-        id<MTLComputePipelineState> pipeline = [device newComputePipelineStateWithFunction:function error:&ns_error];
-        if (pipeline == nil) {
-            nn_set_error(err, err_len, "newComputePipelineStateWithFunction failed: %s", [[ns_error localizedDescription] UTF8String]);
-            return 14;
-        }
-        nn_fill_probe(device, pipeline, out_probe);
         return 0;
     }
 }
@@ -243,7 +261,6 @@ int nn_metal_run_logits_matmul(
         }
         if (repeat_count == 0) repeat_count = 1;
         const char *selected_kernel = nn_logits_kernel_name_or_default(kernel_name);
-        const bool threadgroup_kernel = nn_logits_kernel_is_threadgroup(selected_kernel);
 
         id<MTLDevice> device = MTLCreateSystemDefaultDevice();
         if (device == nil) {
@@ -259,17 +276,10 @@ int nn_metal_run_logits_matmul(
             return 22;
         }
 
-        id<MTLFunction> function = [library newFunctionWithName:[NSString stringWithUTF8String:selected_kernel]];
-        if (function == nil) {
-            nn_set_error(err, err_len, "Metal function %s not found", selected_kernel);
-            return 23;
-        }
-
-        id<MTLComputePipelineState> pipeline = [device newComputePipelineStateWithFunction:function error:&ns_error];
-        if (pipeline == nil) {
-            nn_set_error(err, err_len, "newComputePipelineStateWithFunction failed: %s", [[ns_error localizedDescription] UTF8String]);
-            return 24;
-        }
+        id<MTLComputePipelineState> pipeline = nil;
+        int pipeline_rc = nn_create_logits_pipeline(device, library, selected_kernel, &pipeline, &selected_kernel, err, err_len, 23, 24);
+        if (pipeline_rc != 0) return pipeline_rc;
+        const bool threadgroup_kernel = nn_logits_kernel_is_threadgroup(selected_kernel);
         nn_fill_probe(device, pipeline, out_probe);
 
         const NSUInteger hidden_bytes = (NSUInteger)cols * sizeof(float);
@@ -360,6 +370,7 @@ int nn_metal_run_logits_matmul(
             out_result->n = rows;
             out_result->elapsed_ms = (end_time - start_time) * 1000.0;
             out_result->used_no_copy_buffers = used_no_copy ? 1 : 0;
+            nn_fill_actual_kernel(out_result, selected_kernel);
         }
         return 0;
     }
@@ -391,7 +402,6 @@ int nn_metal_benchmark_logits_matmul_persistent(
         if (iterations == 0) iterations = 1;
         if (repeat_count == 0) repeat_count = 1;
         const char *selected_kernel = nn_logits_kernel_name_or_default(kernel_name);
-        const bool threadgroup_kernel = nn_logits_kernel_is_threadgroup(selected_kernel);
 
         CFAbsoluteTime setup_start = CFAbsoluteTimeGetCurrent();
         id<MTLDevice> device = MTLCreateSystemDefaultDevice();
@@ -408,17 +418,10 @@ int nn_metal_benchmark_logits_matmul_persistent(
             return 32;
         }
 
-        id<MTLFunction> function = [library newFunctionWithName:[NSString stringWithUTF8String:selected_kernel]];
-        if (function == nil) {
-            nn_set_error(err, err_len, "Metal function %s not found", selected_kernel);
-            return 33;
-        }
-
-        id<MTLComputePipelineState> pipeline = [device newComputePipelineStateWithFunction:function error:&ns_error];
-        if (pipeline == nil) {
-            nn_set_error(err, err_len, "newComputePipelineStateWithFunction failed: %s", [[ns_error localizedDescription] UTF8String]);
-            return 34;
-        }
+        id<MTLComputePipelineState> pipeline = nil;
+        int pipeline_rc = nn_create_logits_pipeline(device, library, selected_kernel, &pipeline, &selected_kernel, err, err_len, 33, 34);
+        if (pipeline_rc != 0) return pipeline_rc;
+        const bool threadgroup_kernel = nn_logits_kernel_is_threadgroup(selected_kernel);
         nn_fill_probe(device, pipeline, out_probe);
 
         const NSUInteger hidden_bytes = (NSUInteger)cols * sizeof(float);
@@ -518,6 +521,7 @@ int nn_metal_benchmark_logits_matmul_persistent(
             out_result->n = rows;
             out_result->elapsed_ms = elapsed_ms;
             out_result->used_no_copy_buffers = used_no_copy ? 1 : 0;
+            nn_fill_actual_kernel(out_result, selected_kernel);
         }
         if (out_benchmark != NULL) {
             memset(out_benchmark, 0, sizeof(*out_benchmark));

@@ -416,3 +416,40 @@
 - HF bridge alignment remained intact for the three required prompts with max absolute logit diff `0.0`; sampling smoke remained `temperature=0.6`, `top_p=0.95`, `top_k=20`, candidate count `20`, selected token `353`.
 - Decision: keep the auto mode because it is opt-in, auditable, correct, and rollback-safe. Do not promote threadgroup or no-copy defaults from this milestone; use auto only as a diagnostic path for future staged throughput experiments.
 - Next optimization target: reduce repeated auto/benchmark setup overhead by adding a lower-overhead kernel-resolution/probe path or cache so auto diagnostics do not add avoidable library/pipeline setup work to each CLI process.
+
+## 2026-06-10 Resumed ultragoal G062 — bridge-side auto-kernel resolution
+- Follow-on hypothesis from G061: `--kernel auto` was safe but did a Zig-side threadgroup pipeline probe before calling the Metal bridge, then the bridge loaded the library and built a pipeline again for the actual run. That made auto diagnostics auditable but structurally duplicated setup work.
+- Implemented the smallest reversible cleanup:
+  - Removed the separate `nn_metal_probe_logits_kernel` API added in G061.
+  - Added bridge-side auto resolution inside normal logits pipeline creation.
+  - `auto` now opens the Metal library once per run, attempts the threadgroup pipeline in that same library, chooses it only when `maxTotalThreadsPerThreadgroup >= 256`, and otherwise falls back to scalar.
+  - Added `actual_kernel_name` to `NnMetalSmokeResult` so `metal_logits_v1` still reports concrete `actual_kernel` from the bridge result.
+  - Kept default/no-flag behavior unchanged: `scalar` + `copy`; explicit `scalar` and `threadgroup` remain hard overrides.
+- Direct correctness evidence after the change:
+  - Default no-flag full-vocab run: `kernel=scalar`, `actual_kernel=scalar`, top-1 `353`, top-20 set match `true`, `mismatches=0`.
+  - Explicit scalar full-vocab run: `actual_kernel=scalar`, top-1 `353`, top-20 set match `true`, `mismatches=0`.
+  - Explicit threadgroup full-vocab run: `actual_kernel=threadgroup`, top-1 `353`, top-20 set match `true`, `mismatches=0`.
+  - Auto full-vocab run on Apple M4: `kernel=auto`, bridge-reported `actual_kernel=threadgroup`, top-1 `353`, top-20 set match `true`, `mismatches=0`.
+  - Auto persistent full-vocab run: `actual_kernel=threadgroup`, top-1 `353`, top-20 set match `true`, `mismatches=0`.
+- Focused sequential benchmark evidence with `--no-build` to avoid build/parallel contention:
+  - `artifacts/benchmarks/g062_auto_probe/auto_nocopy_seq.json`: requested `auto`, resolved `actual_kernel=threadgroup`, `actual_kernels_seen=["threadgroup"]`, `actual_used_no_copy_all=true`, median bridge wall `97.197 ms`, median measured total `506.939 ms`, persistent setup `16.699 ms`, persistent per-kernel-repeat `13.634 ms`.
+  - `artifacts/benchmarks/g062_auto_probe/threadgroup_nocopy_seq.json`: requested `threadgroup`, resolved `actual_kernel=threadgroup`, `actual_kernels_seen=["threadgroup"]`, `actual_used_no_copy_all=true`, median bridge wall `110.580 ms`, median measured total `554.606 ms`, persistent setup `26.131 ms`, persistent per-kernel-repeat `13.978 ms`.
+  - Interpretation: absolute timings remain noisy on this machine, but auto no longer has a structural extra pre-run probe and is comparable to explicit threadgroup in the same sequential run. This is a setup-path cleanup, not a default promotion or stable throughput-win claim.
+- Required/default benchmark gate after the change:
+  - `artifacts/benchmarks/g062_auto_probe/default_required_benchmark.json`: requested/default `scalar`, resolved `actual_kernel=scalar`, top-1 `353`, top-20 set match `true`, `mismatches=0`. Timing was unusually noisy (`metal_cli_bridge_wall_ms` median `671.159 ms`), so it is recorded as correctness evidence, not performance evidence.
+- Full verification commands run:
+  - `zig fmt src/metal_logits_test.zig`
+  - `python3 -m py_compile scripts/benchmark_metal_logits.py`
+  - `zig build -Denable-metal=true`
+  - Direct CLI full-vocab checks for no-flag default, explicit scalar, explicit threadgroup, auto, and auto persistent.
+  - `uv run python scripts/benchmark_metal_logits.py --no-build --warmup 1 --repeats 3 --cpu-repeats 1 --kernel auto --buffer-mode nocopy --kernel-repeats 5 --persistent-iters 3 --out artifacts/benchmarks/g062_auto_probe/auto_nocopy_seq.json`
+  - `uv run python scripts/benchmark_metal_logits.py --no-build --warmup 1 --repeats 3 --cpu-repeats 1 --kernel threadgroup --buffer-mode nocopy --kernel-repeats 5 --persistent-iters 3 --out artifacts/benchmarks/g062_auto_probe/threadgroup_nocopy_seq.json`
+  - `zig build`
+  - `zig build -Dtarget=x86_64-linux --summary all`
+  - `zig build -Denable-metal=true metal-smoke`
+  - `zig build -Denable-metal=true metal-logits-test -- --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk --kernel-repeats 2`
+  - `uv run python scripts/benchmark_metal_logits.py --no-build --warmup 1 --repeats 2 --cpu-repeats 1 --kernel-repeats 5 --out artifacts/benchmarks/g062_auto_probe/default_required_benchmark.json`
+  - `uv run python scripts/run_alignment_tests.py`
+- HF bridge alignment remained intact for `"Hi,"`, `"The capital of China is"`, and `"What is 1+1?"` with max absolute logit diff `0.0`; sampling smoke remained `temperature=0.6`, `top_p=0.95`, `top_k=20`, candidate count `20`, selected token `353`.
+- Decision: keep the bridge-side auto resolution cleanup because it removes redundant setup structure while preserving defaults, rollback paths, and alignment. Do not claim a stable throughput win due noisy absolute measurements.
+- Next optimization target: reduce benchmark timing noise and improve decision quality by recording process/thermal/noise context or adding repeated persistent samples in the matrix harness before any further default/promotion work.
