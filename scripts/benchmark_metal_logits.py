@@ -35,6 +35,12 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help="Also run one in-process persistent-buffer benchmark with this many command-buffer iterations",
     )
+    parser.add_argument(
+        "--persistent-samples",
+        type=int,
+        default=1,
+        help="Number of persistent benchmark samples to collect when --persistent-iters is set",
+    )
     parser.add_argument("--no-build", action="store_true", help="Skip prerequisite zig build steps")
     return parser.parse_args()
 
@@ -104,9 +110,7 @@ def run_metal(args: argparse.Namespace) -> tuple[list[float], list[float], list[
     return wall_ms, kernel_ms, records
 
 
-def run_persistent_metal(args: argparse.Namespace) -> tuple[float, dict] | None:
-    if args.persistent_iters <= 0:
-        return None
+def run_persistent_metal_once(args: argparse.Namespace) -> tuple[float, dict]:
     cmd = [
         args.cli,
         args.metallib,
@@ -126,6 +130,14 @@ def run_persistent_metal(args: argparse.Namespace) -> tuple[float, dict] | None:
     proc = subprocess.run(cmd, check=True, text=True, stdout=subprocess.PIPE)
     wall_ms = (time.perf_counter() - start) * 1000.0
     return wall_ms, json.loads(proc.stdout)
+
+
+def run_persistent_metal(args: argparse.Namespace) -> list[tuple[float, dict]]:
+    if args.persistent_iters <= 0:
+        return []
+    if args.persistent_samples <= 0:
+        raise SystemExit("--persistent-samples must be positive when --persistent-iters is set")
+    return [run_persistent_metal_once(args) for _ in range(args.persistent_samples)]
 
 
 def run_cpu_fixture(path: Path, repeats: int):
@@ -154,10 +166,27 @@ def run_cpu_fixture(path: Path, repeats: int):
     }
 
 
-def validate_actual_kernel(args: argparse.Namespace, records: list[dict], persistent: tuple[float, dict] | None) -> tuple[str, list[str]]:
+def persistent_summary(persistent_runs: list[tuple[float, dict]], args: argparse.Namespace) -> dict | None:
+    if not persistent_runs:
+        return None
+    records = [record for _, record in persistent_runs]
+    return {
+        "count": len(persistent_runs),
+        "wall_ms": summarize([wall_ms for wall_ms, _ in persistent_runs]),
+        "setup_ms": summarize([float(record["persistent_setup_ms"]) for record in records]),
+        "elapsed_ms": summarize([float(record["persistent_elapsed_ms"]) for record in records]),
+        "persistent_ms_per_iter": summarize([float(record["persistent_ms_per_iter"]) for record in records]),
+        "persistent_ms_per_kernel_repeat": summarize([float(record["persistent_ms_per_kernel_repeat"]) for record in records]),
+        "wall_ms_per_iter": summarize([wall_ms / args.persistent_iters for wall_ms, _ in persistent_runs]),
+        "wall_ms_per_kernel_repeat": summarize([wall_ms / (args.persistent_iters * args.kernel_repeats) for wall_ms, _ in persistent_runs]),
+        "actual_kernels_seen": sorted({record.get("actual_kernel") for record in records if record.get("actual_kernel") is not None}),
+        "used_no_copy_all": all(bool(record.get("used_no_copy_buffers", False)) for record in records),
+    }
+
+
+def validate_actual_kernel(args: argparse.Namespace, records: list[dict], persistent_runs: list[tuple[float, dict]]) -> tuple[str, list[str]]:
     actual_kernels = [record.get("actual_kernel") for record in records]
-    if persistent is not None:
-        actual_kernels.append(persistent[1].get("actual_kernel"))
+    actual_kernels.extend(record.get("actual_kernel") for _, record in persistent_runs)
 
     if args.kernel == "auto":
         missing = [index for index, value in enumerate(actual_kernels) if value not in {"scalar", "threadgroup"}]
@@ -184,7 +213,8 @@ def main() -> None:
 
     rows, cols, *_ = load_fixture_views(fixture)
     metal_wall, metal_kernel, records = run_metal(args)
-    persistent = run_persistent_metal(args)
+    persistent_runs = run_persistent_metal(args)
+    persistent = persistent_runs[-1] if persistent_runs else None
     metal_per_repeat = [float(record.get("elapsed_ms_per_repeat", record["elapsed_ms"])) for record in records]
     fixture_load_ms = [float(record["fixture_load_ms"]) for record in records if "fixture_load_ms" in record]
     bridge_wall_ms = [float(record["metal_bridge_wall_ms"]) for record in records if "metal_bridge_wall_ms" in record]
@@ -193,13 +223,14 @@ def main() -> None:
     cpu = run_cpu_fixture(fixture, args.cpu_repeats)
     if args.buffer_mode == "nocopy":
         failed = [record for record in records if not record.get("used_no_copy_buffers", False)]
-        persistent_failed = persistent is not None and not persistent[1].get("used_no_copy_buffers", False)
+        persistent_failed = any(not record.get("used_no_copy_buffers", False) for _, record in persistent_runs)
         if failed or persistent_failed:
             raise SystemExit("requested --buffer-mode nocopy but at least one Metal run did not use no-copy buffers")
     host_overhead = [wall - kernel for wall, kernel in zip(metal_wall, metal_kernel)]
     no_copy_count = sum(1 for record in records if record.get("used_no_copy_buffers", False))
     persistent_used_no_copy = None if persistent is None else bool(persistent[1].get("used_no_copy_buffers", False))
-    actual_kernel, actual_kernels_seen = validate_actual_kernel(args, records, persistent)
+    actual_kernel, actual_kernels_seen = validate_actual_kernel(args, records, persistent_runs)
+    persistent_samples_summary = persistent_summary(persistent_runs, args)
 
     report = {
         "fixture": str(fixture),
@@ -235,6 +266,18 @@ def main() -> None:
             "wall_ms_per_iter": persistent[0] / args.persistent_iters,
             "wall_ms_per_kernel_repeat": persistent[0] / (args.persistent_iters * args.kernel_repeats),
         },
+        "persistent_metal_samples": [
+            {
+                "wall_ms": wall_ms,
+                "record": record,
+                "wall_ms_per_iter": wall_ms / args.persistent_iters,
+                "wall_ms_per_kernel_repeat": wall_ms / (args.persistent_iters * args.kernel_repeats),
+            }
+            for wall_ms, record in persistent_runs
+        ]
+        if len(persistent_runs) > 1
+        else None,
+        "persistent_metal_summary": persistent_samples_summary,
         "cpu_reference": cpu,
         "bridge_baseline_artifact": "artifacts/benchmarks/bridge_baseline.json",
         "local_app_baseline": "skipped: no fair local app/CLI baseline configured for identical Qwen3.5-0.8B settings",

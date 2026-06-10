@@ -46,6 +46,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cpu-repeats", type=int, default=1)
     parser.add_argument("--kernel-repeats", type=int, default=5)
     parser.add_argument("--persistent-iters", type=int, default=3)
+    parser.add_argument("--persistent-samples", type=int, default=1)
     parser.add_argument("--no-build", action="store_true", help="Skip the one upfront Metal build")
     return parser.parse_args()
 
@@ -76,6 +77,11 @@ def median_ms(report: dict[str, Any], key: str) -> float | None:
 
 
 def persistent_per_repeat(report: dict[str, Any]) -> float | None:
+    summary = report.get("persistent_metal_summary")
+    if isinstance(summary, dict):
+        per_repeat = summary.get("persistent_ms_per_kernel_repeat")
+        if isinstance(per_repeat, dict) and per_repeat.get("median_ms") is not None:
+            return float(per_repeat["median_ms"])
     persistent = report.get("persistent_metal")
     if not isinstance(persistent, dict):
         return None
@@ -150,6 +156,13 @@ def row_passed(report: dict[str, Any], kernel: str, buffer_mode: str, repeats: i
             reasons.append("persistent run did not use no-copy buffers")
         if record.get("actual_buffer_mode") != "nocopy" or record.get("used_no_copy_buffers") is not True:
             reasons.append("nocopy last record actual mode mismatch")
+    summary = report.get("persistent_metal_summary")
+    if isinstance(summary, dict):
+        if int(summary.get("count", -1)) < 1:
+            reasons.append("persistent summary has no samples")
+        per_repeat_summary = summary.get("persistent_ms_per_kernel_repeat", {})
+        if not positive_number(per_repeat_summary.get("median_ms")):
+            reasons.append("invalid persistent per-repeat summary median")
     return not reasons, reasons
 
 
@@ -179,6 +192,8 @@ def run_row(args: argparse.Namespace, kernel: str, buffer_mode: str, row_out: Pa
         str(args.kernel_repeats),
         "--persistent-iters",
         str(args.persistent_iters),
+        "--persistent-samples",
+        str(args.persistent_samples),
         "--no-build",
     ]
     proc = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -211,6 +226,7 @@ def run_row(args: argparse.Namespace, kernel: str, buffer_mode: str, row_out: Pa
         "command_buffer_per_repeat_mean_ms": mean_ms(report, "metal_command_buffer_per_repeat_ms"),
         "command_buffer_per_repeat_median_ms": median_ms(report, "metal_command_buffer_per_repeat_ms"),
         "persistent_ms_per_kernel_repeat": persistent_per_repeat(report),
+        "persistent_metal_summary": report.get("persistent_metal_summary"),
         "actual_used_no_copy_all": report.get("actual_used_no_copy_all"),
         "persistent_actual_used_no_copy": report.get("persistent_actual_used_no_copy"),
         "last_record": report.get("metal_last_record"),
@@ -319,6 +335,7 @@ def main() -> None:
             "cpu_repeats": args.cpu_repeats,
             "kernel_repeats": args.kernel_repeats,
             "persistent_iters": args.persistent_iters,
+            "persistent_samples": args.persistent_samples,
         },
     }
     out.write_text(json.dumps(summary, indent=2) + "\n")

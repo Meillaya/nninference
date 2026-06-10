@@ -453,3 +453,32 @@
 - HF bridge alignment remained intact for `"Hi,"`, `"The capital of China is"`, and `"What is 1+1?"` with max absolute logit diff `0.0`; sampling smoke remained `temperature=0.6`, `top_p=0.95`, `top_k=20`, candidate count `20`, selected token `353`.
 - Decision: keep the bridge-side auto resolution cleanup because it removes redundant setup structure while preserving defaults, rollback paths, and alignment. Do not claim a stable throughput win due noisy absolute measurements.
 - Next optimization target: reduce benchmark timing noise and improve decision quality by recording process/thermal/noise context or adding repeated persistent samples in the matrix harness before any further default/promotion work.
+
+## 2026-06-10 Resumed ultragoal G063 — repeated persistent benchmark samples
+- Follow-on hypothesis from G062: single persistent benchmark samples were too noisy to support confident kernel/default decisions. Added an explicit multi-sample path to improve decision quality without changing default benchmark behavior.
+- Implemented tooling changes:
+  - `scripts/benchmark_metal_logits.py` now accepts `--persistent-samples N` when `--persistent-iters` is enabled.
+  - Default remains `--persistent-samples 1`, preserving the existing `persistent_metal` object for compatibility.
+  - Multi-sample runs add `persistent_metal_samples` and `persistent_metal_summary` with count, wall/setup/elapsed/per-iter/per-kernel-repeat summaries, actual kernels seen, and no-copy evidence.
+  - `scripts/benchmark_metal_logits_matrix.py` now accepts explicit `--persistent-samples`, passes it through to each row, validates persistent summaries, and ranks persistent timing by the summarized median when present.
+- Direct benchmark validation:
+  - `artifacts/benchmarks/g063_persistent_samples/auto_samples2.json`: requested `auto`, resolved `actual_kernel=threadgroup`, `actual_kernels_seen=["threadgroup"]`, `actual_used_no_copy_all=true`, two persistent samples captured, persistent per-kernel-repeat summary median `16.109 ms`, min `15.400 ms`, max `16.817 ms`.
+  - Default compatibility check `artifacts/benchmarks/g063_persistent_samples/default_samples1.json`: omitted `--persistent-samples`, preserved non-null `persistent_metal`, kept `persistent_metal_samples=null`, emitted `persistent_metal_summary.count=1`, resolved `actual_kernel=scalar`, and preserved correctness.
+- Matrix validation:
+  - `artifacts/benchmarks/g063_persistent_samples/matrix_samples2.json`: verdict `pass`, ranking confidence `low` because repeats/samples were intentionally small for validation.
+  - Rows: `scalar/nocopy` and `threadgroup/nocopy` both passed top-1/top-20 correctness and actual no-copy evidence.
+  - Matrix persistent ranking used summary medians: `threadgroup/nocopy` `13.076 ms` vs `scalar/nocopy` `17.524 ms` per kernel repeat in this validation run.
+  - This is a tooling validation sample, not a default-promotion claim.
+- Full verification commands run:
+  - `python3 -m py_compile scripts/benchmark_metal_logits.py scripts/benchmark_metal_logits_matrix.py`
+  - `uv run python scripts/benchmark_metal_logits.py --no-build --warmup 1 --repeats 2 --cpu-repeats 1 --kernel auto --buffer-mode nocopy --kernel-repeats 5 --persistent-iters 2 --persistent-samples 2 --out artifacts/benchmarks/g063_persistent_samples/auto_samples2.json`
+  - `uv run python scripts/benchmark_metal_logits_matrix.py --no-build --warmup 1 --repeats 2 --cpu-repeats 1 --kernel-repeats 5 --persistent-iters 2 --persistent-samples 2 --kernels scalar,threadgroup --buffer-modes nocopy --out artifacts/benchmarks/g063_persistent_samples/matrix_samples2.json --artifact-dir artifacts/benchmarks/g063_persistent_samples/matrix_runs`
+  - `uv run python scripts/benchmark_metal_logits.py --no-build --warmup 1 --repeats 1 --cpu-repeats 1 --kernel scalar --buffer-mode copy --kernel-repeats 2 --persistent-iters 1 --out artifacts/benchmarks/g063_persistent_samples/default_samples1.json`
+  - `zig build`
+  - `zig build -Dtarget=x86_64-linux --summary all`
+  - `zig build -Denable-metal=true metal-smoke`
+  - `zig build -Denable-metal=true metal-logits-test -- --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk --kernel-repeats 2`
+  - `uv run python scripts/run_alignment_tests.py`
+- HF bridge alignment remained intact for all three required prompts with max absolute logit diff `0.0`; sampling smoke remained `temperature=0.6`, `top_p=0.95`, `top_k=20`, candidate count `20`, selected token `353`.
+- Decision: keep repeated persistent samples as opt-in measurement infrastructure. Do not change defaults or promote kernels based on this validation-sized run.
+- Next optimization target: use the improved matrix sampling to run a higher-confidence focused comparison, then decide whether a small integration convenience (for example auto diagnostics in matrix via explicit `--kernels auto`) is worthwhile without changing defaults.
