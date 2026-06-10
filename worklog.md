@@ -243,3 +243,23 @@
   - `zig build -Dtarget=x86_64-linux --summary all`
   - `uv run python scripts/run_alignment_tests.py`
 - Remaining limitation: this milestone improves measurement clarity rather than removing the bottleneck. It does not change the fixture binary format or the default HF bridge.
+
+## 2026-06-10 Resumed ultragoal G056 — direct fixture loader
+- Replaced the `metal_logits_v1` fixture loader's full-file `readFileAlloc` + per-float conversion loop with direct positional reads into the destination `[]f32` buffers for hidden, weights, and expected logits. The fixture binary format remains unchanged.
+- Correctness remained green for scalar and threadgroup kernels on the full-vocab Qwen fixture: top-1 `353`, top-20 set match `true`, `mismatches=0`; scalar max abs diff remained `0.000011444092` and threadgroup max abs diff remained `0.0000019073486`.
+- Benchmark improvement versus G054 instrumentation:
+  - G054 scalar one-shot CLI wall mean: `2384.427 ms`; G056: `813.716 ms` (~65.9% lower).
+  - G054 CLI-measured total mean: `2127.364 ms`; G056: `551.057 ms` (~74.1% lower).
+  - G054 fixture load mean: `1941.055 ms`; G056: `357.533 ms` (~81.6% lower).
+  - G056 command-buffer per-repeat mean was `17.181 ms`, so the end-to-end gain came from reducing host fixture materialization rather than changing kernel math.
+  - G056 persistent sample: fixture load `372.467 ms`, persistent loop `216.218 ms` for `3×5` repeats, `persistent_ms_per_kernel_repeat=14.415 ms`.
+- Verification commands run:
+  - `zig fmt src/metal_logits_test.zig`
+  - `zig build -Denable-metal=true`
+  - `./zig-out/bin/metal_logits_v1 zig-out/metal/kernels.metallib --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk --kernel scalar --kernel-repeats 2`
+  - `./zig-out/bin/metal_logits_v1 zig-out/metal/kernels.metallib --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk --kernel threadgroup --kernel-repeats 2`
+  - `uv run python scripts/benchmark_metal_logits.py --warmup 1 --repeats 2 --cpu-repeats 1 --kernel scalar --kernel-repeats 5 --persistent-iters 3 --out artifacts/benchmarks/g056_direct_loader.json`
+  - `zig build`
+  - `zig build -Dtarget=x86_64-linux --summary all`
+  - `uv run python scripts/run_alignment_tests.py`
+- Remaining bottleneck: the CLI still reads hundreds of MiB of fixture data and copies weights into a shared Metal buffer once per process. A true live backend or memory-mapped/persistent process would be needed to remove that remaining cost.

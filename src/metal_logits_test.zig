@@ -178,14 +178,18 @@ fn makeTinyFixture(allocator: std.mem.Allocator) !Fixture {
 }
 
 fn loadFixture(io: Io, allocator: std.mem.Allocator, path: []const u8) !Fixture {
-    const bytes = try Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(2 * 1024 * 1024 * 1024));
-    defer allocator.free(bytes);
-    if (bytes.len < 24 or !std.mem.eql(u8, bytes[0..8], fixture_magic)) return error.BadFixtureMagic;
-    const rows = std.mem.readInt(u32, bytes[8..12], .little);
-    const cols = std.mem.readInt(u32, bytes[12..16], .little);
+    var file = try Io.Dir.cwd().openFile(io, path, .{});
+    defer file.close(io);
+
+    const stat = try file.stat(io);
+    var header: [24]u8 = undefined;
+    if (try file.readPositionalAll(io, &header, 0) != header.len) return error.BadFixtureSize;
+    if (!std.mem.eql(u8, header[0..8], fixture_magic)) return error.BadFixtureMagic;
+    const rows = std.mem.readInt(u32, header[8..12], .little);
+    const cols = std.mem.readInt(u32, header[12..16], .little);
     const tol = Tolerance{
-        .max_abs = readF32(bytes[16..20]),
-        .max_rel = readF32(bytes[20..24]),
+        .max_abs = readF32(header[16..20]),
+        .max_rel = readF32(header[20..24]),
     };
     const rows_usize: usize = rows;
     const cols_usize: usize = cols;
@@ -193,15 +197,18 @@ fn loadFixture(io: Io, allocator: std.mem.Allocator, path: []const u8) !Fixture 
     const weights_len = rows_usize * cols_usize;
     const expected_len = rows_usize;
     const expected_bytes = 24 + 4 * (hidden_len + weights_len + expected_len);
-    if (bytes.len != expected_bytes) return error.BadFixtureSize;
+    if (stat.size != expected_bytes) return error.BadFixtureSize;
 
-    var offset: usize = 24;
-    const hidden = try readF32Slice(allocator, bytes, &offset, hidden_len);
+    var offset: u64 = 24;
+    const hidden = try allocator.alloc(f32, hidden_len);
     errdefer allocator.free(hidden);
-    const weights = try readF32Slice(allocator, bytes, &offset, weights_len);
+    try readF32SliceDirect(file, io, hidden, &offset);
+    const weights = try allocator.alloc(f32, weights_len);
     errdefer allocator.free(weights);
-    const expected = try readF32Slice(allocator, bytes, &offset, expected_len);
+    try readF32SliceDirect(file, io, weights, &offset);
+    const expected = try allocator.alloc(f32, expected_len);
     errdefer allocator.free(expected);
+    try readF32SliceDirect(file, io, expected, &offset);
 
     return .{
         .rows = rows_usize,
@@ -217,14 +224,10 @@ fn readF32(bytes: *const [4]u8) f32 {
     return @bitCast(std.mem.readInt(u32, bytes, .little));
 }
 
-fn readF32Slice(allocator: std.mem.Allocator, bytes: []const u8, offset: *usize, len: usize) ![]f32 {
-    const out = try allocator.alloc(f32, len);
-    errdefer allocator.free(out);
-    for (out) |*item| {
-        item.* = readF32(bytes[offset.*..][0..4]);
-        offset.* += 4;
-    }
-    return out;
+fn readF32SliceDirect(file: Io.File, io: Io, out: []f32, offset: *u64) !void {
+    const bytes = std.mem.sliceAsBytes(out);
+    if (try file.readPositionalAll(io, bytes, offset.*) != bytes.len) return error.BadFixtureSize;
+    offset.* += bytes.len;
 }
 
 fn runCase(io: Io, stdout: *Io.Writer, allocator: std.mem.Allocator, metallib_path_z: [:0]const u8, fixture_name: []const u8, fixture: Fixture, expect_topk: bool, kernel_repeats: u32, benchmark_iters: u32, kernel: Kernel, fixture_load_ms: f64) !void {
