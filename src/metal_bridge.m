@@ -173,6 +173,7 @@ int nn_metal_run_logits_matmul(
     float *logits_out,
     uint32_t rows,
     uint32_t cols,
+    uint32_t repeat_count,
     NnMetalProbe *out_probe,
     NnMetalSmokeResult *out_result,
     char *err,
@@ -184,6 +185,7 @@ int nn_metal_run_logits_matmul(
             nn_set_error(err, err_len, "invalid logits_matmul arguments");
             return 20;
         }
+        if (repeat_count == 0) repeat_count = 1;
 
         id<MTLDevice> device = MTLCreateSystemDefaultDevice();
         if (device == nil) {
@@ -251,11 +253,13 @@ int nn_metal_run_logits_matmul(
         MTLSize grid_size = MTLSizeMake(rows, 1, 1);
 
         CFAbsoluteTime start_time = CFAbsoluteTimeGetCurrent();
-        if ([encoder respondsToSelector:@selector(dispatchThreads:threadsPerThreadgroup:)]) {
-            [encoder dispatchThreads:grid_size threadsPerThreadgroup:threadgroup_size];
-        } else {
-            const NSUInteger group_count = ((NSUInteger)rows + threads_per_group - 1) / threads_per_group;
-            [encoder dispatchThreadgroups:MTLSizeMake(group_count, 1, 1) threadsPerThreadgroup:threadgroup_size];
+        for (uint32_t repeat = 0; repeat < repeat_count; repeat += 1) {
+            if ([encoder respondsToSelector:@selector(dispatchThreads:threadsPerThreadgroup:)]) {
+                [encoder dispatchThreads:grid_size threadsPerThreadgroup:threadgroup_size];
+            } else {
+                const NSUInteger group_count = ((NSUInteger)rows + threads_per_group - 1) / threads_per_group;
+                [encoder dispatchThreadgroups:MTLSizeMake(group_count, 1, 1) threadsPerThreadgroup:threadgroup_size];
+            }
         }
         [encoder endEncoding];
         [command_buffer commit];

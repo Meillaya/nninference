@@ -25,6 +25,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--warmup", type=int, default=1)
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--cpu-repeats", type=int, default=2)
+    parser.add_argument("--kernel-repeats", type=int, default=5)
     return parser.parse_args()
 
 
@@ -54,7 +55,7 @@ def summarize(values: list[float]) -> dict[str, float]:
 
 
 def run_metal(args: argparse.Namespace) -> tuple[list[float], list[float], list[dict]]:
-    cmd = [args.cli, args.metallib, "--fixture", args.fixture, "--expect-topk"]
+    cmd = [args.cli, args.metallib, "--fixture", args.fixture, "--expect-topk", "--kernel-repeats", str(args.kernel_repeats)]
     for _ in range(args.warmup):
         subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL)
 
@@ -106,6 +107,7 @@ def main() -> None:
 
     rows, cols, *_ = load_fixture_views(fixture)
     metal_wall, metal_kernel, records = run_metal(args)
+    metal_per_repeat = [float(record.get("elapsed_ms_per_repeat", record["elapsed_ms"])) for record in records]
     cpu = run_cpu_fixture(fixture, args.cpu_repeats)
     host_overhead = [wall - kernel for wall, kernel in zip(metal_wall, metal_kernel)]
 
@@ -117,7 +119,9 @@ def main() -> None:
         "metal_cli": args.cli,
         "metallib": args.metallib,
         "metal_wall_ms": summarize(metal_wall),
-        "metal_command_buffer_ms": summarize(metal_kernel),
+        "kernel_repeats_per_cli_run": args.kernel_repeats,
+        "metal_command_buffer_total_ms": summarize(metal_kernel),
+        "metal_command_buffer_per_repeat_ms": summarize(metal_per_repeat),
         "metal_host_load_and_transfer_overhead_ms": summarize(host_overhead),
         "metal_last_record": records[-1],
         "cpu_reference": cpu,

@@ -36,6 +36,7 @@ const Options = struct {
     metallib_path: []const u8,
     fixture_path: ?[]const u8 = null,
     expect_topk: bool = false,
+    kernel_repeats: u32 = 1,
 };
 
 fn usage() []const u8 {
@@ -70,11 +71,11 @@ pub fn main(init: std.process.Init) !void {
     if (opt.fixture_path) |path| {
         const fixture = try loadFixture(init.io, allocator, path);
         defer fixture.deinit(allocator);
-        try runCase(stdout, allocator, metallib_path_z, "checkpoint_f32_logits_matmul", fixture, opt.expect_topk);
+        try runCase(stdout, allocator, metallib_path_z, "checkpoint_f32_logits_matmul", fixture, opt.expect_topk, opt.kernel_repeats);
     } else {
         const fixture = try makeTinyFixture(allocator);
         defer fixture.deinit(allocator);
-        try runCase(stdout, allocator, metallib_path_z, "tiny_f32_logits_matmul", fixture, opt.expect_topk);
+        try runCase(stdout, allocator, metallib_path_z, "tiny_f32_logits_matmul", fixture, opt.expect_topk, opt.kernel_repeats);
     }
 }
 
@@ -92,6 +93,11 @@ fn parseOptions(args: []const []const u8) !Options {
             opt.fixture_path = args[i];
         } else if (std.mem.eql(u8, args[i], "--expect-topk")) {
             opt.expect_topk = true;
+        } else if (std.mem.eql(u8, args[i], "--kernel-repeats")) {
+            i += 1;
+            if (i >= args.len) return error.MissingKernelRepeats;
+            opt.kernel_repeats = try std.fmt.parseInt(u32, args[i], 10);
+            if (opt.kernel_repeats == 0) return error.InvalidKernelRepeats;
         } else {
             std.debug.print("unknown argument: {s}\n", .{args[i]});
             return error.UnknownArgument;
@@ -181,7 +187,7 @@ fn readF32Slice(allocator: std.mem.Allocator, bytes: []const u8, offset: *usize,
     return out;
 }
 
-fn runCase(stdout: *Io.Writer, allocator: std.mem.Allocator, metallib_path_z: [:0]const u8, fixture_name: []const u8, fixture: Fixture, expect_topk: bool) !void {
+fn runCase(stdout: *Io.Writer, allocator: std.mem.Allocator, metallib_path_z: [:0]const u8, fixture_name: []const u8, fixture: Fixture, expect_topk: bool, kernel_repeats: u32) !void {
     const actual = try allocator.alloc(f32, fixture.rows);
     defer allocator.free(actual);
     @memset(actual, std.math.nan(f32));
@@ -197,6 +203,7 @@ fn runCase(stdout: *Io.Writer, allocator: std.mem.Allocator, metallib_path_z: [:
         actual.ptr,
         @intCast(fixture.rows),
         @intCast(fixture.cols),
+        kernel_repeats,
         &probe,
         &result,
         err[0..].ptr,
@@ -236,7 +243,7 @@ fn runCase(stdout: *Io.Writer, allocator: std.mem.Allocator, metallib_path_z: [:
     }
 
     try stdout.print(
-        "{{\"fixture\":\"{s}\",\"device\":\"{s}\",\"rows\":{d},\"cols\":{d},\"max_abs_diff\":{d},\"max_rel_diff\":{d},\"mismatches\":{d},\"tolerance_max_abs\":{d},\"tolerance_max_rel\":{d},\"expected_top1\":{d},\"actual_top1\":{d},\"top1_match\":{},\"top20_set_match\":{},\"elapsed_ms\":{d}}}\n",
+        "{{\"fixture\":\"{s}\",\"device\":\"{s}\",\"rows\":{d},\"cols\":{d},\"max_abs_diff\":{d},\"max_rel_diff\":{d},\"mismatches\":{d},\"tolerance_max_abs\":{d},\"tolerance_max_rel\":{d},\"expected_top1\":{d},\"actual_top1\":{d},\"top1_match\":{},\"top20_set_match\":{},\"kernel_repeats\":{d},\"elapsed_ms\":{d},\"elapsed_ms_per_repeat\":{d}}}\n",
         .{
             fixture_name,
             cString(&probe.device_name),
@@ -251,7 +258,9 @@ fn runCase(stdout: *Io.Writer, allocator: std.mem.Allocator, metallib_path_z: [:
             actual_top1,
             top1_match,
             top20_set_match,
+            kernel_repeats,
             result.elapsed_ms,
+            result.elapsed_ms / @as(f64, @floatFromInt(kernel_repeats)),
         },
     );
 }

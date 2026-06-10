@@ -44,6 +44,7 @@ int nn_metal_run_logits_matmul(
     float *logits_out,
     uint32_t rows,
     uint32_t cols,
+    uint32_t repeat_count,
     NnMetalProbe *out_probe,
     NnMetalSmokeResult *out_result,
     char *err,
