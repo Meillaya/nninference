@@ -140,3 +140,24 @@
   - `uv run python scripts/benchmark_metal_logits.py --warmup 1 --repeats 2 --cpu-repeats 1 --kernel-repeats 5`
   - `uv run python scripts/run_alignment_tests.py`
 - Latest post-fix benchmark: amortized Metal command-buffer per-repeat mean `14.640 ms`; CLI wall mean `2220.244 ms`; host/load/copy overhead mean `2147.046 ms`; CPU NumPy reference `62.637 ms` for one repeat. HF alignment still reports max_abs_diff `0.0` for all three required prompts.
+
+## 2026-06-10 Ultragoal Gate 6 — final verification report
+- Final independent review found six issues and requested changes. All were addressed in commit `840e052`: explicit Metal opt-in, reproducible benchmark prerequisites, no unnecessary `trust_remote_code`, output-embedding LM-head fixtures, corrected capability reporting, and tighter performance wording.
+- Final verification matrix after review fixes:
+  - `zig build` — pass; default build remains CPU/HF-bridge only.
+  - `zig build -Dtarget=x86_64-linux --summary all` — pass; installs only `infer_cpu_v1` for Linux target.
+  - `zig build -Denable-metal=true metal-smoke` — pass; Apple M4 smoke, vector length `1024`, mismatches `0`, max_abs_error `0`.
+  - `zig build -Denable-metal=true metal-logits-test -- --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk --kernel-repeats 2` — pass; max_abs_diff `0.000011444092`, mismatches `0`, expected_top1/actual_top1 `353`, top20_set_match `true`.
+  - `uv run python scripts/run_alignment_tests.py` — pass; all three required prompts have max_abs_diff `0.0`, greedy IDs match HF forward/generate, default sampling remains temperature `0.6`, top_p `0.95`, top_k `20`.
+  - `uv run python scripts/benchmark_metal_logits.py --warmup 1 --repeats 2 --cpu-repeats 1 --kernel-repeats 5` — pass after explicit Metal prerequisite build; latest amortized Metal command-buffer per-repeat mean `14.640 ms`, CLI wall mean `2220.244 ms`, host/load/copy overhead mean `2147.046 ms`.
+- Completed scope:
+  - Preserved the existing HF-bridge `infer_cpu_v1` correctness path.
+  - Added explicit, macOS-only Zig+Objective-C+Metal sidecar support under `-Denable-metal=true`.
+  - Validated tiny f32 matmul, Qwen row-slice matmul, and full-vocab Qwen f32 LM-head projection for prompt `Hi,`.
+  - Exposed a non-default fixture-driven prototype CLI `metal_logits_v1`.
+  - Measured current throughput and one amortized command-buffer timing improvement.
+- Remaining risks/gaps:
+  - `metal_logits_v1` is fixture-driven and does not tokenize prompts, run transformer blocks, or replace `infer_cpu_v1`.
+  - Full-vocab Metal validation was performed for prompt `Hi,`; row-slice validation covers only that prompt as well.
+  - Performance claims are limited to command-buffer and one-shot fixture CLI measurements; no GPU timestamp/counter profiling or persistent-buffer runtime exists yet.
+  - The default HF bridge still depends on Python/PyTorch/Transformers and is not a standalone native Qwen runtime.
