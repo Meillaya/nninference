@@ -174,3 +174,20 @@
 - Correctness baseline remains green: full-vocab Metal fixture for prompt `Hi,` matched expected top-1 `353`, top-20 set matched, `mismatches=0`, `max_abs_diff=0.000011444092`; HF alignment for `Hi,`, `The capital of China is`, and `What is 1+1?` still reports max absolute logit diff `0.0` with greedy token IDs matching HF.
 - Resumed benchmark baseline: one-shot Metal CLI wall mean `2412.188 ms`; command-buffer total mean for 5 repeats `93.969 ms`; amortized command-buffer per-repeat mean `18.794 ms`; estimated host/load/transfer overhead mean `2318.219 ms`; CPU NumPy/Accelerate reference for one repeat `66.897 ms`.
 - Next optimization target: add a reversible in-process benchmark mode so `metal_logits_v1` can reuse a loaded fixture and Metal buffers across multiple measured iterations. This should improve measurement quality and isolate persistent-buffer/kernel behavior before any integration into the default HF bridge.
+
+## 2026-06-10 Resumed ultragoal G052 — persistent in-process Metal benchmark mode
+- Added an opt-in persistent benchmark path for the sidecar LM-head prototype: `metal_logits_v1 ... --benchmark-iters N`. This keeps the existing one-shot correctness path unchanged, but adds a C bridge path that creates the Metal device/library/pipeline/command queue and shared buffers once, copies the fixture into Metal buffers once, then runs `N` measured command-buffer iterations against those persistent buffers.
+- Updated `scripts/benchmark_metal_logits.py` with `--persistent-iters N`; the default benchmark remains backward-compatible and reports `persistent_metal: null` unless the option is requested.
+- Correctness remained green for the full-vocab Qwen fixture: expected/actual top-1 `353`, top-20 set match `true`, `mismatches=0`, `max_abs_diff=0.000011444092`.
+- Verification commands run:
+  - `zig fmt src/metal_logits_test.zig`
+  - `zig build`
+  - `zig build -Denable-metal=true`
+  - `zig build -Dtarget=x86_64-linux --summary all`
+  - `zig build -Denable-metal=true metal-logits-test -- --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk --kernel-repeats 2`
+  - `./zig-out/bin/metal_logits_v1 zig-out/metal/kernels.metallib --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk --kernel-repeats 2 --benchmark-iters 3`
+  - `uv run python scripts/run_alignment_tests.py`
+  - `uv run python scripts/benchmark_metal_logits.py --warmup 1 --repeats 2 --cpu-repeats 1 --kernel-repeats 5 --persistent-iters 3`
+- Latest persistent-mode sample: setup `97.151 ms`; measured persistent loop `200.001 ms` for `3` iterations × `5` kernel repeats; `persistent_ms_per_kernel_repeat=13.333 ms`. The same benchmark run's one-shot command-buffer per-repeat mean was `20.802 ms`, while the one-shot CLI wall mean remained `2352.716 ms` because the process still loads the ~971 MiB fixture once.
+- Interpretation: this is a measurement/runtime-ownership milestone rather than a full end-to-end throughput win. It proves buffer/pipeline reuse inside one process and gives a cleaner persistent command-buffer signal; it does not yet remove the initial fixture file read or integrate Metal into `infer_cpu_v1`.
+- Next optimization target: use this persistent measurement path to evaluate kernel-level changes or reduce fixture load/transfer overhead further, while keeping the one-shot CLI and HF bridge as rollback/reference paths.

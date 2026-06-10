@@ -27,6 +27,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--cpu-repeats", type=int, default=2)
     parser.add_argument("--kernel-repeats", type=int, default=5)
+    parser.add_argument(
+        "--persistent-iters",
+        type=int,
+        default=0,
+        help="Also run one in-process persistent-buffer benchmark with this many command-buffer iterations",
+    )
     parser.add_argument("--no-build", action="store_true", help="Skip prerequisite zig build steps")
     return parser.parse_args()
 
@@ -84,6 +90,26 @@ def run_metal(args: argparse.Namespace) -> tuple[list[float], list[float], list[
     return wall_ms, kernel_ms, records
 
 
+def run_persistent_metal(args: argparse.Namespace) -> tuple[float, dict] | None:
+    if args.persistent_iters <= 0:
+        return None
+    cmd = [
+        args.cli,
+        args.metallib,
+        "--fixture",
+        args.fixture,
+        "--expect-topk",
+        "--kernel-repeats",
+        str(args.kernel_repeats),
+        "--benchmark-iters",
+        str(args.persistent_iters),
+    ]
+    start = time.perf_counter()
+    proc = subprocess.run(cmd, check=True, text=True, stdout=subprocess.PIPE)
+    wall_ms = (time.perf_counter() - start) * 1000.0
+    return wall_ms, json.loads(proc.stdout)
+
+
 def run_cpu_fixture(path: Path, repeats: int):
     rows, cols, atol, rtol, hidden, weights, expected = load_fixture_views(path)
     times: list[float] = []
@@ -120,6 +146,7 @@ def main() -> None:
 
     rows, cols, *_ = load_fixture_views(fixture)
     metal_wall, metal_kernel, records = run_metal(args)
+    persistent = run_persistent_metal(args)
     metal_per_repeat = [float(record.get("elapsed_ms_per_repeat", record["elapsed_ms"])) for record in records]
     cpu = run_cpu_fixture(fixture, args.cpu_repeats)
     host_overhead = [wall - kernel for wall, kernel in zip(metal_wall, metal_kernel)]
@@ -137,6 +164,14 @@ def main() -> None:
         "metal_command_buffer_per_repeat_ms": summarize(metal_per_repeat),
         "metal_host_load_and_transfer_overhead_ms": summarize(host_overhead),
         "metal_last_record": records[-1],
+        "persistent_metal": None
+        if persistent is None
+        else {
+            "wall_ms": persistent[0],
+            "record": persistent[1],
+            "wall_ms_per_iter": persistent[0] / args.persistent_iters,
+            "wall_ms_per_kernel_repeat": persistent[0] / (args.persistent_iters * args.kernel_repeats),
+        },
         "cpu_reference": cpu,
         "bridge_baseline_artifact": "artifacts/benchmarks/bridge_baseline.json",
         "local_app_baseline": "skipped: no fair local app/CLI baseline configured for identical Qwen3.5-0.8B settings",

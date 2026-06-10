@@ -22,6 +22,15 @@ typedef struct NnMetalSmokeResult {
     double elapsed_ms;
 } NnMetalSmokeResult;
 
+typedef struct NnMetalBenchmarkResult {
+    uint32_t iterations;
+    uint32_t repeat_count;
+    double setup_ms;
+    double elapsed_ms;
+    double elapsed_ms_per_iteration;
+    double elapsed_ms_per_kernel_repeat;
+} NnMetalBenchmarkResult;
+
 int nn_metal_probe(NnMetalProbe *out_probe, char *err, size_t err_len);
 
 int nn_metal_run_vector_add(
@@ -47,6 +56,22 @@ int nn_metal_run_logits_matmul(
     uint32_t repeat_count,
     NnMetalProbe *out_probe,
     NnMetalSmokeResult *out_result,
+    char *err,
+    size_t err_len
+);
+
+int nn_metal_benchmark_logits_matmul_persistent(
+    const char *metallib_path,
+    const float *hidden,
+    const float *weights_row_major,
+    float *logits_out,
+    uint32_t rows,
+    uint32_t cols,
+    uint32_t iterations,
+    uint32_t repeat_count,
+    NnMetalProbe *out_probe,
+    NnMetalSmokeResult *out_result,
+    NnMetalBenchmarkResult *out_benchmark,
     char *err,
     size_t err_len
 );

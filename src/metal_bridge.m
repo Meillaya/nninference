@@ -280,3 +280,140 @@ int nn_metal_run_logits_matmul(
         return 0;
     }
 }
+
+int nn_metal_benchmark_logits_matmul_persistent(
+    const char *metallib_path,
+    const float *hidden,
+    const float *weights_row_major,
+    float *logits_out,
+    uint32_t rows,
+    uint32_t cols,
+    uint32_t iterations,
+    uint32_t repeat_count,
+    NnMetalProbe *out_probe,
+    NnMetalSmokeResult *out_result,
+    NnMetalBenchmarkResult *out_benchmark,
+    char *err,
+    size_t err_len
+) {
+    @autoreleasepool {
+        nn_clear_error(err, err_len);
+        if (metallib_path == NULL || hidden == NULL || weights_row_major == NULL || logits_out == NULL || rows == 0 || cols == 0) {
+            nn_set_error(err, err_len, "invalid persistent logits_matmul benchmark arguments");
+            return 30;
+        }
+        if (iterations == 0) iterations = 1;
+        if (repeat_count == 0) repeat_count = 1;
+
+        CFAbsoluteTime setup_start = CFAbsoluteTimeGetCurrent();
+        id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+        if (device == nil) {
+            nn_set_error(err, err_len, "MTLCreateSystemDefaultDevice returned nil");
+            return 31;
+        }
+
+        NSError *ns_error = nil;
+        NSString *library_path = [NSString stringWithUTF8String:metallib_path];
+        id<MTLLibrary> library = [device newLibraryWithFile:library_path error:&ns_error];
+        if (library == nil) {
+            nn_set_error(err, err_len, "newLibraryWithFile failed: %s", [[ns_error localizedDescription] UTF8String]);
+            return 32;
+        }
+
+        id<MTLFunction> function = [library newFunctionWithName:@"logits_matmul"];
+        if (function == nil) {
+            nn_set_error(err, err_len, "Metal function logits_matmul not found");
+            return 33;
+        }
+
+        id<MTLComputePipelineState> pipeline = [device newComputePipelineStateWithFunction:function error:&ns_error];
+        if (pipeline == nil) {
+            nn_set_error(err, err_len, "newComputePipelineStateWithFunction failed: %s", [[ns_error localizedDescription] UTF8String]);
+            return 34;
+        }
+        nn_fill_probe(device, pipeline, out_probe);
+
+        const NSUInteger hidden_bytes = (NSUInteger)cols * sizeof(float);
+        const NSUInteger weight_bytes = (NSUInteger)rows * (NSUInteger)cols * sizeof(float);
+        const NSUInteger logits_bytes = (NSUInteger)rows * sizeof(float);
+        id<MTLBuffer> hidden_buffer = [device newBufferWithLength:hidden_bytes options:MTLResourceStorageModeShared];
+        id<MTLBuffer> weights_buffer = [device newBufferWithLength:weight_bytes options:MTLResourceStorageModeShared];
+        id<MTLBuffer> logits_buffer = [device newBufferWithLength:logits_bytes options:MTLResourceStorageModeShared];
+        id<MTLBuffer> dims_buffer = [device newBufferWithLength:sizeof(uint32_t) * 2 options:MTLResourceStorageModeShared];
+        if (hidden_buffer == nil || weights_buffer == nil || logits_buffer == nil || dims_buffer == nil) {
+            nn_set_error(err, err_len, "failed to allocate shared Metal buffers");
+            return 35;
+        }
+        memcpy([hidden_buffer contents], hidden, hidden_bytes);
+        memcpy([weights_buffer contents], weights_row_major, weight_bytes);
+        memset([logits_buffer contents], 0, logits_bytes);
+        uint32_t dims[2] = { rows, cols };
+        memcpy([dims_buffer contents], dims, sizeof(dims));
+
+        id<MTLCommandQueue> queue = [device newCommandQueue];
+        if (queue == nil) {
+            nn_set_error(err, err_len, "failed to create Metal command queue");
+            return 36;
+        }
+
+        NSUInteger threads_per_group = [pipeline maxTotalThreadsPerThreadgroup];
+        if (threads_per_group > 256) threads_per_group = 256;
+        if (threads_per_group == 0) threads_per_group = 1;
+        if (threads_per_group > rows) threads_per_group = rows;
+        MTLSize threadgroup_size = MTLSizeMake(threads_per_group, 1, 1);
+        MTLSize grid_size = MTLSizeMake(rows, 1, 1);
+        CFAbsoluteTime setup_end = CFAbsoluteTimeGetCurrent();
+
+        CFAbsoluteTime loop_start = CFAbsoluteTimeGetCurrent();
+        for (uint32_t iteration = 0; iteration < iterations; iteration += 1) {
+            id<MTLCommandBuffer> command_buffer = [queue commandBuffer];
+            id<MTLComputeCommandEncoder> encoder = [command_buffer computeCommandEncoder];
+            if (command_buffer == nil || encoder == nil) {
+                nn_set_error(err, err_len, "failed to create Metal command encoder");
+                return 37;
+            }
+
+            [encoder setComputePipelineState:pipeline];
+            [encoder setBuffer:hidden_buffer offset:0 atIndex:0];
+            [encoder setBuffer:weights_buffer offset:0 atIndex:1];
+            [encoder setBuffer:logits_buffer offset:0 atIndex:2];
+            [encoder setBuffer:dims_buffer offset:0 atIndex:3];
+
+            for (uint32_t repeat = 0; repeat < repeat_count; repeat += 1) {
+                if ([encoder respondsToSelector:@selector(dispatchThreads:threadsPerThreadgroup:)]) {
+                    [encoder dispatchThreads:grid_size threadsPerThreadgroup:threadgroup_size];
+                } else {
+                    const NSUInteger group_count = ((NSUInteger)rows + threads_per_group - 1) / threads_per_group;
+                    [encoder dispatchThreadgroups:MTLSizeMake(group_count, 1, 1) threadsPerThreadgroup:threadgroup_size];
+                }
+            }
+            [encoder endEncoding];
+            [command_buffer commit];
+            [command_buffer waitUntilCompleted];
+            if ([command_buffer error] != nil) {
+                nn_set_error(err, err_len, "Metal command buffer failed: %s", [[command_buffer.error localizedDescription] UTF8String]);
+                return 38;
+            }
+        }
+        CFAbsoluteTime loop_end = CFAbsoluteTimeGetCurrent();
+
+        memcpy(logits_out, [logits_buffer contents], logits_bytes);
+        const double setup_ms = (setup_end - setup_start) * 1000.0;
+        const double elapsed_ms = (loop_end - loop_start) * 1000.0;
+        if (out_result != NULL) {
+            memset(out_result, 0, sizeof(*out_result));
+            out_result->n = rows;
+            out_result->elapsed_ms = elapsed_ms;
+        }
+        if (out_benchmark != NULL) {
+            memset(out_benchmark, 0, sizeof(*out_benchmark));
+            out_benchmark->iterations = iterations;
+            out_benchmark->repeat_count = repeat_count;
+            out_benchmark->setup_ms = setup_ms;
+            out_benchmark->elapsed_ms = elapsed_ms;
+            out_benchmark->elapsed_ms_per_iteration = elapsed_ms / (double)iterations;
+            out_benchmark->elapsed_ms_per_kernel_repeat = elapsed_ms / (double)((uint64_t)iterations * (uint64_t)repeat_count);
+        }
+        return 0;
+    }
+}

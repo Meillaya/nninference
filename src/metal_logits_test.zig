@@ -37,14 +37,17 @@ const Options = struct {
     fixture_path: ?[]const u8 = null,
     expect_topk: bool = false,
     kernel_repeats: u32 = 1,
+    benchmark_iters: u32 = 0,
 };
 
 fn usage() []const u8 {
     return
-    \\metal_logits_v1 <metallib> [--fixture artifacts/.../fixture.bin] [--expect-topk]
+    \\metal_logits_v1 <metallib> [--fixture artifacts/.../fixture.bin] [--expect-topk] [--kernel-repeats N] [--benchmark-iters N]
     \\
     \\Prototype-only CLI for the sidecar Metal LM-head logits projection.
     \\It does not run the transformer or replace infer_cpu_v1's default HF bridge.
+    \\--benchmark-iters keeps one fixture load and one Metal buffer setup alive
+    \\for N measured command-buffer iterations.
     \\
     ;
 }
@@ -71,11 +74,11 @@ pub fn main(init: std.process.Init) !void {
     if (opt.fixture_path) |path| {
         const fixture = try loadFixture(init.io, allocator, path);
         defer fixture.deinit(allocator);
-        try runCase(stdout, allocator, metallib_path_z, "checkpoint_f32_logits_matmul", fixture, opt.expect_topk, opt.kernel_repeats);
+        try runCase(stdout, allocator, metallib_path_z, "checkpoint_f32_logits_matmul", fixture, opt.expect_topk, opt.kernel_repeats, opt.benchmark_iters);
     } else {
         const fixture = try makeTinyFixture(allocator);
         defer fixture.deinit(allocator);
-        try runCase(stdout, allocator, metallib_path_z, "tiny_f32_logits_matmul", fixture, opt.expect_topk, opt.kernel_repeats);
+        try runCase(stdout, allocator, metallib_path_z, "tiny_f32_logits_matmul", fixture, opt.expect_topk, opt.kernel_repeats, opt.benchmark_iters);
     }
 }
 
@@ -98,6 +101,11 @@ fn parseOptions(args: []const []const u8) !Options {
             if (i >= args.len) return error.MissingKernelRepeats;
             opt.kernel_repeats = try std.fmt.parseInt(u32, args[i], 10);
             if (opt.kernel_repeats == 0) return error.InvalidKernelRepeats;
+        } else if (std.mem.eql(u8, args[i], "--benchmark-iters")) {
+            i += 1;
+            if (i >= args.len) return error.MissingBenchmarkIters;
+            opt.benchmark_iters = try std.fmt.parseInt(u32, args[i], 10);
+            if (opt.benchmark_iters == 0) return error.InvalidBenchmarkIters;
         } else {
             std.debug.print("unknown argument: {s}\n", .{args[i]});
             return error.UnknownArgument;
@@ -187,28 +195,46 @@ fn readF32Slice(allocator: std.mem.Allocator, bytes: []const u8, offset: *usize,
     return out;
 }
 
-fn runCase(stdout: *Io.Writer, allocator: std.mem.Allocator, metallib_path_z: [:0]const u8, fixture_name: []const u8, fixture: Fixture, expect_topk: bool, kernel_repeats: u32) !void {
+fn runCase(stdout: *Io.Writer, allocator: std.mem.Allocator, metallib_path_z: [:0]const u8, fixture_name: []const u8, fixture: Fixture, expect_topk: bool, kernel_repeats: u32, benchmark_iters: u32) !void {
     const actual = try allocator.alloc(f32, fixture.rows);
     defer allocator.free(actual);
     @memset(actual, std.math.nan(f32));
 
     var probe: c.NnMetalProbe = std.mem.zeroes(c.NnMetalProbe);
     var result: c.NnMetalSmokeResult = std.mem.zeroes(c.NnMetalSmokeResult);
+    var benchmark: c.NnMetalBenchmarkResult = std.mem.zeroes(c.NnMetalBenchmarkResult);
     var err: [2048]u8 = std.mem.zeroes([2048]u8);
 
-    const rc = c.nn_metal_run_logits_matmul(
-        metallib_path_z.ptr,
-        fixture.hidden.ptr,
-        fixture.weights.ptr,
-        actual.ptr,
-        @intCast(fixture.rows),
-        @intCast(fixture.cols),
-        kernel_repeats,
-        &probe,
-        &result,
-        err[0..].ptr,
-        err.len,
-    );
+    const rc = if (benchmark_iters == 0)
+        c.nn_metal_run_logits_matmul(
+            metallib_path_z.ptr,
+            fixture.hidden.ptr,
+            fixture.weights.ptr,
+            actual.ptr,
+            @intCast(fixture.rows),
+            @intCast(fixture.cols),
+            kernel_repeats,
+            &probe,
+            &result,
+            err[0..].ptr,
+            err.len,
+        )
+    else
+        c.nn_metal_benchmark_logits_matmul_persistent(
+            metallib_path_z.ptr,
+            fixture.hidden.ptr,
+            fixture.weights.ptr,
+            actual.ptr,
+            @intCast(fixture.rows),
+            @intCast(fixture.cols),
+            benchmark_iters,
+            kernel_repeats,
+            &probe,
+            &result,
+            &benchmark,
+            err[0..].ptr,
+            err.len,
+        );
     if (rc != 0) {
         try stdout.print("metal logits test failed: rc={d} err={s}\n", .{ rc, cString(&err) });
         return error.MetalLogitsFailed;
@@ -242,8 +268,13 @@ fn runCase(stdout: *Io.Writer, allocator: std.mem.Allocator, metallib_path_z: [:
         }
     }
 
+    const elapsed_ms_per_repeat = if (benchmark_iters == 0)
+        result.elapsed_ms / @as(f64, @floatFromInt(kernel_repeats))
+    else
+        benchmark.elapsed_ms_per_kernel_repeat;
+
     try stdout.print(
-        "{{\"fixture\":\"{s}\",\"device\":\"{s}\",\"rows\":{d},\"cols\":{d},\"max_abs_diff\":{d},\"max_rel_diff\":{d},\"mismatches\":{d},\"tolerance_max_abs\":{d},\"tolerance_max_rel\":{d},\"expected_top1\":{d},\"actual_top1\":{d},\"top1_match\":{},\"top20_set_match\":{},\"kernel_repeats\":{d},\"elapsed_ms\":{d},\"elapsed_ms_per_repeat\":{d}}}\n",
+        "{{\"fixture\":\"{s}\",\"device\":\"{s}\",\"rows\":{d},\"cols\":{d},\"max_abs_diff\":{d},\"max_rel_diff\":{d},\"mismatches\":{d},\"tolerance_max_abs\":{d},\"tolerance_max_rel\":{d},\"expected_top1\":{d},\"actual_top1\":{d},\"top1_match\":{},\"top20_set_match\":{},\"kernel_repeats\":{d},\"elapsed_ms\":{d},\"elapsed_ms_per_repeat\":{d}",
         .{
             fixture_name,
             cString(&probe.device_name),
@@ -260,9 +291,22 @@ fn runCase(stdout: *Io.Writer, allocator: std.mem.Allocator, metallib_path_z: [:
             top20_set_match,
             kernel_repeats,
             result.elapsed_ms,
-            result.elapsed_ms / @as(f64, @floatFromInt(kernel_repeats)),
+            elapsed_ms_per_repeat,
         },
     );
+    if (benchmark_iters != 0) {
+        try stdout.print(
+            ",\"benchmark_iters\":{d},\"persistent_setup_ms\":{d},\"persistent_elapsed_ms\":{d},\"persistent_ms_per_iter\":{d},\"persistent_ms_per_kernel_repeat\":{d}",
+            .{
+                benchmark.iterations,
+                benchmark.setup_ms,
+                benchmark.elapsed_ms,
+                benchmark.elapsed_ms_per_iteration,
+                benchmark.elapsed_ms_per_kernel_repeat,
+            },
+        );
+    }
+    try stdout.writeAll("}\n");
 }
 
 fn argmax(values: []const f32) usize {
