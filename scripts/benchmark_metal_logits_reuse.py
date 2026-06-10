@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import statistics
 import subprocess
 import time
@@ -26,8 +27,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--buffer-mode", choices=["copy", "nocopy"], default="nocopy")
     parser.add_argument("--kernel-repeats", type=int, default=5)
     parser.add_argument("--benchmark-iters", type=int, default=10)
+    parser.add_argument(
+        "--samples",
+        type=int,
+        default=1,
+        help="number of reusable-fixture matrix subprocess samples to collect",
+    )
     parser.add_argument("--no-build", action="store_true")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.samples < 1:
+        raise SystemExit("--samples must be >= 1")
+    return args
 
 
 def ensure_prerequisites(args: argparse.Namespace) -> None:
@@ -35,6 +45,14 @@ def ensure_prerequisites(args: argparse.Namespace) -> None:
         return
     subprocess.run(["zig", "build", "-Denable-metal=true"], check=True)
     subprocess.run(["zig", "build", "-Denable-metal=true", "metal-lib"], check=True)
+
+
+def positive_finite(value: Any) -> bool:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(number) and number > 0.0
 
 
 def summarize(values: list[float]) -> dict[str, float]:
@@ -76,7 +94,8 @@ def requested_kernels(args: argparse.Namespace) -> list[str]:
         raise SystemExit("--kernels must contain at least one kernel")
     invalid = [kernel for kernel in kernels if kernel not in VALID_KERNELS]
     if invalid:
-        raise SystemExit(f"--kernels contains unsupported kernel(s): {invalid}; expected scalar, threadgroup, or auto")
+        expected = "scalar, threadgroup, or auto"
+        raise SystemExit(f"--kernels contains unsupported kernel(s): {invalid}; expected {expected}")
     return kernels
 
 
@@ -106,8 +125,12 @@ def validate(args: argparse.Namespace, header: dict[str, Any], rows: list[dict[s
             reasons.append(f"{kernel}: buffer mode mismatch")
         if args.buffer_mode == "nocopy" and row.get("used_no_copy_buffers") is not True:
             reasons.append(f"{kernel}: no-copy evidence missing")
+        if args.buffer_mode == "copy" and row.get("used_no_copy_buffers") is not False:
+            reasons.append(f"{kernel}: copy mode unexpectedly used no-copy buffers")
         if row.get("top1_match") is not True or row.get("top20_set_match") is not True:
             reasons.append(f"{kernel}: top-k mismatch")
+        if row.get("expected_top1") != row.get("actual_top1"):
+            reasons.append(f"{kernel}: expected_top1/actual_top1 mismatch")
         if int(row.get("mismatches", -1)) != 0:
             reasons.append(f"{kernel}: mismatches={row.get('mismatches')}")
         if int(row.get("kernel_repeats", -1)) != args.kernel_repeats:
@@ -116,8 +139,14 @@ def validate(args: argparse.Namespace, header: dict[str, Any], rows: list[dict[s
             reasons.append(f"{kernel}: benchmark iters mismatch")
         if float(row.get("fixture_load_ms", -1.0)) != 0.0:
             reasons.append(f"{kernel}: per-row fixture_load_ms should be 0 for reusable-fixture mode")
-        if float(row.get("persistent_ms_per_kernel_repeat", 0.0)) <= 0.0:
-            reasons.append(f"{kernel}: invalid persistent timing")
+        for timing_key in (
+            "persistent_setup_ms",
+            "persistent_elapsed_ms",
+            "persistent_ms_per_iter",
+            "persistent_ms_per_kernel_repeat",
+        ):
+            if timing_key in row and not positive_finite(row.get(timing_key)):
+                reasons.append(f"{kernel}: invalid {timing_key}")
     return reasons
 
 
@@ -125,13 +154,8 @@ def rankable_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [row for row in rows if row.get("kernel") != "auto"]
 
 
-def main() -> None:
-    args = parse_args()
-    ensure_prerequisites(args)
-    out = Path(args.out)
-    out.parent.mkdir(parents=True, exist_ok=True)
-
-    cmd = [
+def build_command(args: argparse.Namespace) -> list[str]:
+    return [
         args.cli,
         args.metallib,
         "--fixture",
@@ -146,31 +170,175 @@ def main() -> None:
         "--matrix-kernels",
         args.kernels,
     ]
+
+
+def run_sample(args: argparse.Namespace, cmd: list[str], sample_index: int) -> dict[str, Any]:
     start = time.perf_counter()
     proc = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     wall_ms = (time.perf_counter() - start) * 1000.0
     if proc.returncode != 0:
-        raise SystemExit(f"matrix benchmark failed with rc={proc.returncode}\nstdout={proc.stdout}\nstderr={proc.stderr}")
-
+        raise SystemExit(
+            f"matrix benchmark sample {sample_index} failed with rc={proc.returncode}\n"
+            f"stdout={proc.stdout}\nstderr={proc.stderr}"
+        )
     header, rows, footer = parse_ndjson(proc.stdout)
-    failure_reasons = validate(args, header, rows)
-    ranked = sorted(rankable_rows(rows), key=lambda row: float(row["persistent_ms_per_kernel_repeat"]))
-    shared_fixture_load_ms = float(header["shared_fixture_load_ms"])
+    return {
+        "sample_index": sample_index,
+        "cli_wall_ms": wall_ms,
+        "shared_fixture_load_ms": float(header["shared_fixture_load_ms"]),
+        "per_row_fixture_load_ms": 0.0,
+        "avoided_duplicate_fixture_load_estimate_ms": float(header["shared_fixture_load_ms"])
+        * max(0, len(rows) - 1),
+        "failure_reasons": validate(args, header, rows),
+        "header": header,
+        "footer": footer,
+        "rows": rows,
+        "persistent_setup_ms": summarize([float(row["persistent_setup_ms"]) for row in rows]),
+        "persistent_elapsed_ms": summarize([float(row["persistent_elapsed_ms"]) for row in rows]),
+        "persistent_ms_per_iter": summarize([float(row["persistent_ms_per_iter"]) for row in rows]),
+        "persistent_ms_per_kernel_repeat": summarize([float(row["persistent_ms_per_kernel_repeat"]) for row in rows]),
+    }
+
+
+def row_key(row: dict[str, Any]) -> str:
+    return f"{row['kernel']}/{row['buffer_mode']}"
+
+
+def aggregate_row_summaries(samples: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    values_by_key: dict[str, dict[str, list[float]]] = {}
+    metadata_by_key: dict[str, dict[str, Any]] = {}
+    for sample in samples:
+        for row in sample["rows"]:
+            if row.get("kernel") == "auto":
+                continue
+            key = row_key(row)
+            bucket = values_by_key.setdefault(
+                key,
+                {
+                    "persistent_setup_ms": [],
+                    "persistent_elapsed_ms": [],
+                    "persistent_ms_per_iter": [],
+                    "persistent_ms_per_kernel_repeat": [],
+                },
+            )
+            for metric in bucket:
+                bucket[metric].append(float(row[metric]))
+            metadata_by_key.setdefault(
+                key,
+                {
+                    "kernel": row["kernel"],
+                    "buffer_mode": row["buffer_mode"],
+                    "actual_kernel": row["actual_kernel"],
+                },
+            )
+    summaries: list[dict[str, Any]] = []
+    for key, metrics in values_by_key.items():
+        summary = metadata_by_key[key] | {
+            "variant_id": key,
+            "persistent_setup_ms": summarize(metrics["persistent_setup_ms"]),
+            "persistent_elapsed_ms": summarize(metrics["persistent_elapsed_ms"]),
+            "persistent_ms_per_iter": summarize(metrics["persistent_ms_per_iter"]),
+            "persistent_ms_per_kernel_repeat": summarize(metrics["persistent_ms_per_kernel_repeat"]),
+        }
+        summaries.append(summary)
+    return sorted(summaries, key=lambda item: item["persistent_ms_per_kernel_repeat"]["median_ms"])
+
+
+def actual_kernels_seen(samples: list[dict[str, Any]]) -> dict[str, list[str]]:
+    seen: dict[str, set[str]] = {}
+    for sample in samples:
+        for row in sample["rows"]:
+            seen.setdefault(str(row["kernel"]), set()).add(str(row["actual_kernel"]))
+    return {kernel: sorted(actuals) for kernel, actuals in sorted(seen.items())}
+
+
+def has_auto_diagnostic(samples: list[dict[str, Any]]) -> bool:
+    return any(row.get("kernel") == "auto" for sample in samples for row in sample["rows"])
+
+
+def collect_failure_reasons(samples: list[dict[str, Any]]) -> list[str]:
+    reasons: list[str] = []
+    for sample in samples:
+        for reason in sample["failure_reasons"]:
+            reasons.append(f"sample {sample['sample_index']}: {reason}")
+    first_header = samples[0]["header"]
+    first_rows = samples[0]["rows"]
+    for sample in samples[1:]:
+        header = sample["header"]
+        for key in ("rows", "cols", "buffer_mode", "kernel_repeats", "benchmark_iters"):
+            if header.get(key) != first_header.get(key):
+                reasons.append(f"sample {sample['sample_index']}: header {key} changed")
+        rows = sample["rows"]
+        if [row.get("kernel") for row in rows] != [row.get("kernel") for row in first_rows]:
+            reasons.append(f"sample {sample['sample_index']}: row kernels changed")
+        for row, first_row in zip(rows, first_rows, strict=False):
+            for key in ("kernel", "buffer_mode", "actual_buffer_mode", "expected_top1", "actual_top1"):
+                if row.get(key) != first_row.get(key):
+                    reasons.append(f"sample {sample['sample_index']}: row {row.get('kernel')} {key} changed")
+    return reasons
+
+
+def main() -> None:
+    args = parse_args()
+    ensure_prerequisites(args)
+    out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    cmd = build_command(args)
+    samples = [run_sample(args, cmd, sample_index) for sample_index in range(args.samples)]
+    first = samples[0]
+    failure_reasons = collect_failure_reasons(samples)
+    ranked_rows = sorted(rankable_rows(first["rows"]), key=lambda row: float(row["persistent_ms_per_kernel_repeat"]))
+    ranked_samples = aggregate_row_summaries(samples)
+    includes_auto = has_auto_diagnostic(samples)
+    shared_fixture_load_ms = first["shared_fixture_load_ms"]
     report = {
         "mode": "reusable-fixture-matrix",
         "verdict": "pass" if not failure_reasons else "fail",
         "failure_reasons": failure_reasons,
-        "includes_auto_diagnostic": any(row.get("kernel") == "auto" for row in rows),
+        "sample_count": args.samples,
+        "settings": {
+            "samples": args.samples,
+            "fixture": args.fixture,
+            "metallib": args.metallib,
+            "cli": args.cli,
+            "kernels": requested_kernels(args),
+            "buffer_mode": args.buffer_mode,
+            "kernel_repeats": args.kernel_repeats,
+            "benchmark_iters": args.benchmark_iters,
+        },
+        "includes_auto_diagnostic": includes_auto,
+        "actual_kernels_seen_by_kernel": actual_kernels_seen(samples),
+        "ranking_confidence": "unranked"
+        if includes_auto
+        else ("medium" if args.samples >= 7 and args.benchmark_iters >= 10 else "low"),
         "ranking_note": "auto rows are diagnostic-only and excluded from persistent timing rankings",
         "command": cmd,
-        "cli_wall_ms": wall_ms,
+        "cli_wall_ms": first["cli_wall_ms"],
+        "cli_wall_ms_summary": summarize([float(sample["cli_wall_ms"]) for sample in samples]),
         "shared_fixture_load_ms": shared_fixture_load_ms,
+        "shared_fixture_load_ms_summary": summarize([float(sample["shared_fixture_load_ms"]) for sample in samples]),
         "per_row_fixture_load_ms": 0.0,
-        "avoided_duplicate_fixture_load_estimate_ms": shared_fixture_load_ms * max(0, len(rows) - 1),
-        "header": header,
-        "footer": footer,
-        "rows": rows,
-        "persistent_ms_per_kernel_repeat": summarize([float(row["persistent_ms_per_kernel_repeat"]) for row in rows]),
+        "avoided_duplicate_fixture_load_estimate_ms": shared_fixture_load_ms * max(0, len(first["rows"]) - 1),
+        "avoided_duplicate_fixture_load_estimate_ms_summary": summarize(
+            [float(sample["avoided_duplicate_fixture_load_estimate_ms"]) for sample in samples]
+        ),
+        "header": first["header"],
+        "footer": first["footer"],
+        "rows": first["rows"],
+        "samples": samples,
+        "persistent_setup_ms": summarize(
+            [float(row["persistent_setup_ms"]) for sample in samples for row in sample["rows"]]
+        ),
+        "persistent_elapsed_ms": summarize(
+            [float(row["persistent_elapsed_ms"]) for sample in samples for row in sample["rows"]]
+        ),
+        "persistent_ms_per_iter": summarize(
+            [float(row["persistent_ms_per_iter"]) for sample in samples for row in sample["rows"]]
+        ),
+        "persistent_ms_per_kernel_repeat": summarize(
+            [float(row["persistent_ms_per_kernel_repeat"]) for sample in samples for row in sample["rows"]]
+        ),
         "ranked_by_persistent_ms_per_kernel_repeat": [
             {
                 "kernel": row["kernel"],
@@ -178,8 +346,9 @@ def main() -> None:
                 "persistent_ms_per_kernel_repeat": row["persistent_ms_per_kernel_repeat"],
                 "actual_kernel": row["actual_kernel"],
             }
-            for row in ranked
+            for row in ranked_rows
         ],
+        "ranked_by_persistent_ms_per_kernel_repeat_samples": ranked_samples,
     }
     out.write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report, indent=2))

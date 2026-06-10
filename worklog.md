@@ -742,3 +742,41 @@
   - Code-reviewer initially requested changes because auto diagnostic rows failed wrapper validation; fixed by treating auto as diagnostic-only concrete-kernel evidence and excluding auto rows from rankings. Re-review APPROVED.
 - Decision: keep the reusable-fixture benchmark prototype. It improves benchmark clarity by separating one shared fixture load from per-kernel timing, but it is still directional and not a runtime/default promotion.
 - Next optimization target: collect repeated reusable-fixture samples or extend the wrapper into a higher-confidence reusable matrix before any default/kernel promotion decision.
+
+## 2026-06-10 Resumed ultragoal G072 — repeated reusable-fixture benchmark samples
+- Extended `scripts/benchmark_metal_logits_reuse.py` with opt-in `--samples N` support for repeated reusable-fixture matrix subprocess samples.
+- Behavior:
+  - Default remains `--samples 1`; the existing top-level `header`, `footer`, `rows`, scalar `cli_wall_ms`, and legacy numeric `ranked_by_persistent_ms_per_kernel_repeat` field remain available for current consumers.
+  - `--samples <= 0` fails early with `--samples must be >= 1`.
+  - `--samples` is consumed by the Python wrapper only and is not passed through to `metal_logits_v1`.
+  - Every sample is validated independently for header/footer shape, row order, requested/actual kernel evidence, buffer mode, no-copy evidence, top-1/top-20 matches, `expected_top1 == actual_top1`, mismatch count, per-row `fixture_load_ms=0`, and positive persistent timings.
+  - Cross-sample checks require stable fixture dimensions/settings, row kernels, buffer mode, and top-1 IDs.
+  - Repeated-sample summaries include CLI wall, shared fixture load, avoided duplicate fixture-load estimate, persistent setup, persistent elapsed, persistent per-iter, and persistent per-kernel-repeat metrics.
+  - Concrete-kernel repeated rankings are grouped by variant and sorted by median `persistent_ms_per_kernel_repeat` under `ranked_by_persistent_ms_per_kernel_repeat_samples`.
+  - `auto` remains diagnostic-only: it must report concrete actual kernels, sets `ranking_confidence=unranked`, and is excluded from both ranking fields.
+- Validation commands:
+  - `python3 -m py_compile scripts/benchmark_metal_logits_reuse.py`
+  - Invalid argument check: `uv run python scripts/benchmark_metal_logits_reuse.py --samples 0 --out artifacts/benchmarks/g072_reuse_samples/invalid.json` exited non-zero with `--samples must be >= 1`.
+  - Default compatibility: `uv run python scripts/benchmark_metal_logits_reuse.py --no-build --kernel-repeats 2 --benchmark-iters 2 --kernels scalar,threadgroup --buffer-mode nocopy --out artifacts/benchmarks/g072_reuse_samples/reuse_default.json`
+  - Explicit one-sample compatibility: `uv run python scripts/benchmark_metal_logits_reuse.py --no-build --samples 1 --kernel-repeats 2 --benchmark-iters 2 --kernels scalar,threadgroup --buffer-mode nocopy --out artifacts/benchmarks/g072_reuse_samples/reuse_samples1.json`
+  - Repeated reusable samples: `uv run python scripts/benchmark_metal_logits_reuse.py --no-build --samples 2 --kernel-repeats 5 --benchmark-iters 10 --kernels scalar,threadgroup --buffer-mode nocopy --out artifacts/benchmarks/g072_reuse_samples/reuse_samples2.json`
+  - Auto diagnostic repeated samples: `uv run python scripts/benchmark_metal_logits_reuse.py --no-build --samples 2 --kernel-repeats 2 --benchmark-iters 2 --kernels auto --buffer-mode nocopy --out artifacts/benchmarks/g072_reuse_samples/reuse_auto_samples2.json`
+  - Existing matrix rollback/control: `uv run python scripts/benchmark_metal_logits_matrix.py --no-build --out artifacts/benchmarks/g072_reuse_samples/matrix_control_nocopy.json --artifact-dir artifacts/benchmarks/g072_reuse_samples/matrix_control_runs --kernels scalar,threadgroup --buffer-modes nocopy --warmup 1 --repeats 2 --cpu-repeats 1 --kernel-repeats 5 --persistent-iters 10 --persistent-samples 1`
+  - Periodic benchmark gate: `uv run python scripts/benchmark_metal_logits.py --warmup 1 --repeats 2 --cpu-repeats 1 --kernel-repeats 5 --out artifacts/benchmarks/g072_reuse_samples/periodic_benchmark.json`
+  - Full verification after the schema-fix review: `python3 -m py_compile scripts/benchmark_metal_logits.py scripts/benchmark_metal_logits_matrix.py scripts/benchmark_metal_logits_reuse.py`; `zig fmt --check src/metal_logits_test.zig`; `zig build`; `zig build -Dtarget=x86_64-linux --summary all`; `zig build -Denable-metal=true metal-smoke`; `zig build -Denable-metal=true metal-logits-test -- --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk --kernel-repeats 2`; `uv run python scripts/run_alignment_tests.py`.
+- Results:
+  - Default and explicit `--samples 1` reusable reports passed and preserved the legacy numeric `ranked_by_persistent_ms_per_kernel_repeat` shape.
+  - `reuse_samples2.json` passed with `sample_count=2`, `ranking_confidence=low`, and concrete actual-kernel evidence: `scalar -> scalar`, `threadgroup -> threadgroup`.
+  - Repeated reusable summary: shared fixture load median `406.2852295 ms`; persistent per-kernel-repeat medians favored `threadgroup/nocopy` at `11.189850568771362 ms` over `scalar/nocopy` at `13.149250745773315 ms`.
+  - `reuse_auto_samples2.json` passed with `ranking_confidence=unranked`, empty ranking fields, and `actual_kernels_seen_by_kernel={'auto': ['threadgroup']}`.
+  - Existing matrix rollback/control passed with `bottleneck_summary.likely_next_focus=fixture_load`.
+  - Periodic benchmark passed: Metal wall mean `813.8705625024159 ms`, measured-total median `552.8220415000001 ms`, command-buffer-per-repeat median `17.106187343597412 ms`, top-1/top-20 pass, mismatches `0`.
+  - Full-vocab Metal logits fixture retained `top1_match=true`, `top20_set_match=true`, and mismatches `0`.
+  - HF bridge alignment remained intact for all three required prompts with max absolute logit diff `0.0`; sampling smoke remained `temperature=0.6`, `top_p=0.95`, `top_k=20`, candidate count `20`, selected token `353`.
+- Review:
+  - Test-engineer subagent supplied the per-sample and cross-sample assertion checklist; those assertions were run against the generated artifacts.
+  - Code-reviewer initially requested changes because the first implementation changed the legacy ranking field schema from numeric rows to summary dictionaries. Fixed by restoring the legacy field and adding repeated-sample medians under `ranked_by_persistent_ms_per_kernel_repeat_samples` only.
+  - Code-reviewer re-review APPROVED the fix.
+  - Verifier subagent confirmed the scoped sample artifacts and schema passed; its remaining gap (full gates) was closed by the verification commands above.
+- Decision: keep repeated reusable-fixture sample support. This is benchmark infrastructure only; no Zig CLI, kernel, runtime default, or HF bridge behavior changed.
+- Next optimization target: use the repeated reusable wrapper for a higher-sample reusable matrix before considering kernel/default promotion, or begin a new opt-in benchmark path that reduces dispatch overhead inside a single Metal command sequence.
