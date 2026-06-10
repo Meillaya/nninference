@@ -675,3 +675,26 @@
   - The matrix still reports `ranking_confidence=low` because the current heuristic is tied to one-shot `repeats>=7`; this should be corrected in a follow-on benchmark-reporting goal for persistent-only evidence rather than manually claiming medium confidence.
   - No defaults or runtime inference behavior changed.
 - Next optimization target: update the confidence heuristic/schema for persistent-only matrices so persistent-only evidence is labeled according to `persistent_samples` and `persistent_iters`, then consider an opt-in fixture-reuse or in-process multi-variant benchmark path to remove the remaining per-subprocess fixture load.
+
+## 2026-06-10 Resumed ultragoal G070 — persistent-only confidence labeling
+- Fixed the matrix confidence heuristic in `scripts/benchmark_metal_logits_matrix.py` so persistent-only matrices are labeled from persistent evidence instead of one-shot repeat counts.
+- Behavior after the change:
+  - Auto diagnostic matrices remain `unranked`.
+  - Standard/non-persistent matrices preserve the existing medium threshold: `repeats >= 7` and `persistent_iters >= 10`.
+  - Persistent-only matrices now reach `medium` when `persistent_samples >= 7` and `persistent_iters >= 10`.
+  - The promotion note now distinguishes persistent-only kernel-loop rankings from standard measured-total rankings.
+- Validation commands:
+  - `python3 -m py_compile scripts/benchmark_metal_logits_matrix.py`
+  - Persistent-only validation: `uv run python scripts/benchmark_metal_logits_matrix.py --no-build --persistent-only --warmup 0 --repeats 0 --cpu-repeats 1 --kernel-repeats 5 --persistent-iters 10 --persistent-samples 7 --kernels scalar,threadgroup --buffer-modes nocopy --out artifacts/benchmarks/g070_confidence/matrix_persistent_medium.json --artifact-dir artifacts/benchmarks/g070_confidence/persistent_runs`
+  - Standard validation: `uv run python scripts/benchmark_metal_logits_matrix.py --no-build --warmup 0 --repeats 2 --cpu-repeats 1 --kernel-repeats 5 --persistent-iters 2 --persistent-samples 1 --kernels scalar,threadgroup --buffer-modes nocopy --out artifacts/benchmarks/g070_confidence/matrix_standard_low.json --artifact-dir artifacts/benchmarks/g070_confidence/standard_runs`
+  - Full verification: `python3 -m py_compile scripts/benchmark_metal_logits.py scripts/benchmark_metal_logits_matrix.py`; `zig build`; `zig build -Dtarget=x86_64-linux --summary all`; `zig build -Denable-metal=true metal-smoke`; `zig build -Denable-metal=true metal-logits-test -- --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk --kernel-repeats 2`; `uv run python scripts/run_alignment_tests.py`.
+- Validation results:
+  - Persistent-only matrix passed and now reports `ranking_confidence=medium` with persistent-only note text. It omitted measured-total rankings by design and ranked persistent kernel timing.
+  - Persistent-only median per-kernel-repeat winner: `threadgroup/nocopy` at `11.557061672210693 ms`; `scalar/nocopy` at `13.764100074768066 ms`.
+  - Standard low-sample matrix passed and still reports `ranking_confidence=low` with measured-total note text, preserving standard semantics.
+  - Code-reviewer subagent APPROVED the scoped confidence-labeling change.
+  - Verifier subagent confirmed the evidence is sufficient after worklog + commit, with the caveat that confidence labels are threshold-based and not statistical significance.
+  - Full-vocab Metal logits fixture retained `top1_match=true`, `top20_set_match=true`, and `mismatches=0`.
+  - HF bridge alignment remained intact for all three required prompts with max absolute logit diff `0.0`; sampling smoke remained `temperature=0.6`, `top_p=0.95`, `top_k=20`, candidate count `20`, selected token `353`.
+- Decision: keep the confidence-labeling fix. It changes benchmark reporting only; no runtime/default behavior changed.
+- Next optimization target: remove remaining fixture-load dominance in benchmark comparisons with an opt-in fixture-reuse or in-process multi-variant path, while keeping the one-shot subprocess matrix as rollback.

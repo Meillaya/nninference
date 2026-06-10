@@ -310,6 +310,31 @@ def rank(rows: list[dict[str, Any]], key: str) -> list[dict[str, Any]]:
     return sorted(ranked, key=lambda row: float(row[key]))
 
 
+def confidence_label(args: argparse.Namespace, kernels: list[str], rankable: list[dict[str, Any]]) -> str:
+    if not rankable or "auto" in kernels:
+        return "unranked"
+    if args.persistent_only:
+        if args.persistent_samples >= 7 and args.persistent_iters >= 10:
+            return "medium"
+        return "low"
+    if args.repeats >= 7 and args.persistent_iters >= 10:
+        return "medium"
+    return "low"
+
+
+def promotion_note(args: argparse.Namespace) -> str:
+    if args.persistent_only:
+        return (
+            "medium-confidence persistent-only directional ranking when persistent_samples >= 7 "
+            "and persistent_iters >= 10; measured-total rankings are intentionally omitted; "
+            "auto rows are diagnostic-only and require explicit scalar/threadgroup confirmation before default changes"
+        )
+    return (
+        "medium-confidence measured-total directional ranking when repeats >= 7 and persistent_iters >= 10; "
+        "auto rows are diagnostic-only and require explicit scalar/threadgroup confirmation before default changes"
+    )
+
+
 def share(numerator: Any, denominator: Any) -> float | None:
     if numerator is None or denominator in (None, 0):
         return None
@@ -413,12 +438,7 @@ def main() -> None:
     failed = [row for row in rows if not row.get("ok")]
     rankable = [row for row in rows if row.get("ok") and row.get("persistent_ms_per_kernel_repeat") is not None]
     verdict = "pass" if not failed else "fail"
-    if not rankable:
-        ranking_confidence = "unranked"
-    elif args.repeats >= 7 and args.persistent_iters >= 10:
-        ranking_confidence = "medium"
-    else:
-        ranking_confidence = "low"
+    ranking_confidence = confidence_label(args, kernels, rankable)
 
     summary = {
         "matrix_version": 1,
@@ -470,7 +490,7 @@ def main() -> None:
             interaction_summary(rows, "persistent_ms_per_kernel_repeat"),
         ],
         "bottleneck_summary": bottleneck_summary(rows),
-        "promotion_note": "medium-confidence directional ranking when repeats >= 7 and persistent_iters >= 10; auto rows are diagnostic-only and require explicit scalar/threadgroup confirmation before default changes",
+        "promotion_note": promotion_note(args),
         "settings": {
             "warmup": args.warmup,
             "repeats": args.repeats,
