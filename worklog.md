@@ -161,3 +161,16 @@
   - Full-vocab Metal validation was performed for prompt `Hi,`; row-slice validation covers only that prompt as well.
   - Performance claims are limited to command-buffer and one-shot fixture CLI measurements; no GPU timestamp/counter profiling or persistent-buffer runtime exists yet.
   - The default HF bridge still depends on Python/PyTorch/Transformers and is not a standalone native Qwen runtime.
+
+## 2026-06-10 Resumed ultragoal G051 — mandatory 12h loop baseline
+- Resumed the Kimi/Metal ultragoal after the earlier premature completion. The corrected interpretation is now explicit: the `12h_plus` budget authorizes continued safe autonomous optimization even after the initial staged Gates 0-6 pass; completion of the old goal list is not by itself a stop condition.
+- Added follow-on ultragoal stories G051-G055 by steering the existing durable plan: baseline reconstruction, persistent in-process Metal benchmark mode, optimized LM-head kernel investigation, fixture/memory-layout evaluation, and a final quality gate. The active Codex goal now points back to `.omx/ultragoal/goals.json` / `.omx/ultragoal/ledger.jsonl`.
+- Reconstructed current baseline from commit `0d44cd9` on branch `ultragoal/kimi-metal-iteration`. Evidence log: `artifacts/benchmarks/resume_g051_baseline.log` (ignored artifact).
+- Verification commands run:
+  - `zig build`
+  - `zig build -Denable-metal=true metal-logits-test -- --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk --kernel-repeats 2`
+  - `uv run python scripts/run_alignment_tests.py`
+  - `uv run python scripts/benchmark_metal_logits.py --warmup 1 --repeats 2 --cpu-repeats 1 --kernel-repeats 5`
+- Correctness baseline remains green: full-vocab Metal fixture for prompt `Hi,` matched expected top-1 `353`, top-20 set matched, `mismatches=0`, `max_abs_diff=0.000011444092`; HF alignment for `Hi,`, `The capital of China is`, and `What is 1+1?` still reports max absolute logit diff `0.0` with greedy token IDs matching HF.
+- Resumed benchmark baseline: one-shot Metal CLI wall mean `2412.188 ms`; command-buffer total mean for 5 repeats `93.969 ms`; amortized command-buffer per-repeat mean `18.794 ms`; estimated host/load/transfer overhead mean `2318.219 ms`; CPU NumPy/Accelerate reference for one repeat `66.897 ms`.
+- Next optimization target: add a reversible in-process benchmark mode so `metal_logits_v1` can reuse a loaded fixture and Metal buffers across multiple measured iterations. This should improve measurement quality and isolate persistent-buffer/kernel behavior before any integration into the default HF bridge.
