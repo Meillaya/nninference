@@ -17,7 +17,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
-KERNELS = ("scalar", "threadgroup")
+DEFAULT_KERNELS = ("scalar", "threadgroup")
+KERNEL_CHOICES = ("scalar", "threadgroup", "auto")
 BUFFER_MODES = ("copy", "nocopy")
 
 
@@ -39,7 +40,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--benchmark-script", default="scripts/benchmark_metal_logits.py")
     parser.add_argument("--out", default="artifacts/benchmarks/metal_logits_matrix.json")
     parser.add_argument("--artifact-dir", default="artifacts/benchmarks/matrix_runs")
-    parser.add_argument("--kernels", default=",".join(KERNELS), help="Comma-separated subset: scalar,threadgroup")
+    parser.add_argument("--kernels", default=",".join(DEFAULT_KERNELS), help="Comma-separated subset: scalar,threadgroup,auto; auto is diagnostic-only")
     parser.add_argument("--buffer-modes", default=",".join(BUFFER_MODES), help="Comma-separated subset: copy,nocopy")
     parser.add_argument("--warmup", type=int, default=1)
     parser.add_argument("--repeats", type=int, default=2)
@@ -105,10 +106,28 @@ def row_passed(report: dict[str, Any], kernel: str, buffer_mode: str, repeats: i
 
     if report.get("kernel") != kernel:
         reasons.append(f"top-level kernel={report.get('kernel')} expected={kernel}")
+    actual_kernel = report.get("actual_kernel")
+    actual_kernels_seen = report.get("actual_kernels_seen", [])
+    if kernel == "auto":
+        if actual_kernel not in {"scalar", "threadgroup"}:
+            reasons.append(f"auto row reported non-concrete actual_kernel={actual_kernel}")
+        if not actual_kernels_seen or any(item not in {"scalar", "threadgroup"} for item in actual_kernels_seen):
+            reasons.append(f"auto row reported invalid actual_kernels_seen={actual_kernels_seen}")
+    else:
+        if actual_kernel is not None and actual_kernel != kernel:
+            reasons.append(f"actual_kernel={actual_kernel} expected={kernel}")
+        if actual_kernels_seen and any(item != kernel for item in actual_kernels_seen):
+            reasons.append(f"actual_kernels_seen={actual_kernels_seen} expected only {kernel}")
     if report.get("requested_buffer_mode") != buffer_mode or report.get("buffer_mode") != buffer_mode:
         reasons.append("requested/top-level buffer mode mismatch")
     if record.get("kernel") != kernel or record.get("buffer_mode") != buffer_mode:
         reasons.append("last-record kernel or buffer mode mismatch")
+    record_actual_kernel = record.get("actual_kernel")
+    if kernel == "auto":
+        if record_actual_kernel not in {"scalar", "threadgroup"}:
+            reasons.append(f"auto last record reported non-concrete actual_kernel={record_actual_kernel}")
+    elif record_actual_kernel is not None and record_actual_kernel != kernel:
+        reasons.append(f"last-record actual_kernel={record_actual_kernel} expected={kernel}")
     if record.get("rows") != report.get("rows") or record.get("cols") != report.get("cols"):
         reasons.append("last-record dimensions mismatch report dimensions")
     if not record.get("top1_match", False):
@@ -160,6 +179,12 @@ def row_passed(report: dict[str, Any], kernel: str, buffer_mode: str, repeats: i
     if isinstance(summary, dict):
         if int(summary.get("count", -1)) < 1:
             reasons.append("persistent summary has no samples")
+        summary_actual = summary.get("actual_kernels_seen", [])
+        if kernel == "auto":
+            if not summary_actual or any(item not in {"scalar", "threadgroup"} for item in summary_actual):
+                reasons.append(f"auto persistent summary has invalid actual_kernels_seen={summary_actual}")
+        elif summary_actual and any(item != kernel for item in summary_actual):
+            reasons.append(f"persistent summary actual_kernels_seen={summary_actual} expected only {kernel}")
         per_repeat_summary = summary.get("persistent_ms_per_kernel_repeat", {})
         if not positive_number(per_repeat_summary.get("median_ms")):
             reasons.append("invalid persistent per-repeat summary median")
@@ -279,7 +304,7 @@ def interaction_summary(rows: list[dict[str, Any]], metric: str) -> dict[str, An
 
 def main() -> None:
     args = parse_args()
-    kernels = parse_csv(args.kernels, KERNELS, "kernels")
+    kernels = parse_csv(args.kernels, KERNEL_CHOICES, "kernels")
     buffer_modes = parse_csv(args.buffer_modes, BUFFER_MODES, "buffer-modes")
     ensure_prerequisites(args)
 
@@ -308,6 +333,7 @@ def main() -> None:
         "matrix_version": 1,
         "verdict": verdict,
         "ranking_confidence": ranking_confidence,
+        "includes_auto_diagnostic": "auto" in kernels,
         "fixture": args.fixture,
         "metallib": args.metallib,
         "cli": args.cli,
@@ -328,7 +354,7 @@ def main() -> None:
             interaction_summary(rows, "measured_total_median_ms"),
             interaction_summary(rows, "persistent_ms_per_kernel_repeat"),
         ],
-        "promotion_note": "medium-confidence directional ranking when repeats >= 7 and persistent_iters >= 10; require follow-on review before default changes",
+        "promotion_note": "medium-confidence directional ranking when repeats >= 7 and persistent_iters >= 10; auto rows are diagnostic-only and require explicit scalar/threadgroup confirmation before default changes",
         "settings": {
             "warmup": args.warmup,
             "repeats": args.repeats,

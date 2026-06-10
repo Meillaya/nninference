@@ -505,3 +505,35 @@
   - The one-shot measured-total metric remains dominated by fixture/host/process noise and does not support default promotion by itself.
   - No defaults changed. `scalar` + `copy` remains the default; `threadgroup`, `nocopy`, and `auto` remain explicit/diagnostic paths.
 - Next optimization target: add an explicit matrix option for `auto` diagnostics or isolate fixture/host timing further, but only if it improves decision quality without affecting default inference behavior.
+
+## 2026-06-10 Resumed ultragoal G065 — explicit auto diagnostics in the matrix harness
+- Added explicit `auto` support to `scripts/benchmark_metal_logits_matrix.py` without changing the default matrix:
+  - Default `--kernels` remains `scalar,threadgroup` for historical comparability.
+  - Parser now accepts `auto` only when requested explicitly.
+  - Matrix summaries include `includes_auto_diagnostic`.
+  - Promotion note now states auto rows are diagnostic-only and require explicit scalar/threadgroup confirmation before default changes.
+- Added row validation for requested-vs-actual kernel evidence:
+  - Auto rows must report concrete `actual_kernel` and `actual_kernels_seen` values in `{scalar, threadgroup}`.
+  - Explicit scalar/threadgroup rows must not report mismatched actual kernels.
+  - Persistent summaries must also report concrete actual-kernel evidence.
+- Validation matrix command:
+  - `uv run python scripts/benchmark_metal_logits_matrix.py --no-build --warmup 1 --repeats 2 --cpu-repeats 1 --kernel-repeats 5 --persistent-iters 2 --persistent-samples 2 --kernels auto,threadgroup --buffer-modes nocopy --out artifacts/benchmarks/g065_auto_matrix/matrix_auto_threadgroup.json --artifact-dir artifacts/benchmarks/g065_auto_matrix/runs`
+- Validation result:
+  - Matrix verdict `pass`; `includes_auto_diagnostic=true`; ranking confidence `low`.
+  - `auto/nocopy` row passed correctness, resolved `actual_kernel=threadgroup`, `actual_kernels_seen=["threadgroup"]`, `actual_used_no_copy_all=true`, persistent per-kernel-repeat summary median `14.714 ms`.
+  - `threadgroup/nocopy` row passed correctness, resolved `actual_kernel=threadgroup`, `actual_kernels_seen=["threadgroup"]`, `actual_used_no_copy_all=true`, persistent per-kernel-repeat summary median `12.830 ms`.
+  - The run confirms auto diagnostics can be included and audited, but does not authorize default promotion.
+- Default compatibility check:
+  - Import-time parse check confirmed `parse_args().kernels == "scalar,threadgroup"` when no explicit `--kernels` is provided.
+- Full verification commands run:
+  - `python3 -m py_compile scripts/benchmark_metal_logits.py scripts/benchmark_metal_logits_matrix.py`
+  - Default parser check for `scalar,threadgroup`.
+  - The explicit auto/threadgroup nocopy matrix command above.
+  - `zig build`
+  - `zig build -Dtarget=x86_64-linux --summary all`
+  - `zig build -Denable-metal=true metal-smoke`
+  - `zig build -Denable-metal=true metal-logits-test -- --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk --kernel-repeats 2`
+  - `uv run python scripts/run_alignment_tests.py`
+- HF bridge alignment remained intact for all three required prompts with max absolute logit diff `0.0`; sampling smoke remained `temperature=0.6`, `top_p=0.95`, `top_k=20`, candidate count `20`, selected token `353`.
+- Decision: keep explicit auto matrix diagnostics as measurement infrastructure. Keep defaults unchanged.
+- Next optimization target: isolate host fixture/load timing further from kernel-loop timing, likely by adding matrix/report fields that rank fixture load, bridge wall, and persistent setup separately for clearer bottleneck targeting.
