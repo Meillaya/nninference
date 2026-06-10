@@ -641,3 +641,37 @@
   - The issue was fixed by requiring concrete actual-kernel reports in persistent-only mode and asserting them in the matrix validator.
 - Decision: keep persistent-only benchmark mode as measurement infrastructure. It reduces one-shot fixture-load repetition in matrix decision loops, while still loading the fixture once per persistent sample subprocess. No runtime inference/default behavior changed.
 - Next optimization target: run a slightly larger persistent-only evidence matrix to decide whether threadgroup should become the preferred benchmark focus, then consider in-process fixture reuse or native multi-variant benchmarking to remove the remaining per-subprocess fixture load.
+
+## 2026-06-10 Resumed ultragoal G069 — higher-sample persistent-only Metal matrix evidence
+- Ran the new persistent-only matrix mode with larger samples to compare kernel-loop behavior while intentionally omitting one-shot measured-total rankings.
+- Command:
+  - `uv run python scripts/benchmark_metal_logits_matrix.py --no-build --persistent-only --warmup 0 --repeats 0 --cpu-repeats 1 --kernel-repeats 5 --persistent-iters 10 --persistent-samples 7 --kernels scalar,threadgroup --buffer-modes nocopy --out artifacts/benchmarks/g069_persistent_only_samples/matrix_persistent_only_samples.json --artifact-dir artifacts/benchmarks/g069_persistent_only_samples/runs`
+- JSON assertions run against `artifacts/benchmarks/g069_persistent_only_samples/matrix_persistent_only_samples.json`:
+  - Matrix verdict `pass`.
+  - `settings.persistent_only=true`, `settings.repeats=0`, `settings.kernel_repeats=5`, `settings.persistent_iters=10`, `settings.persistent_samples=7`.
+  - Exactly two rows were tested: `scalar/nocopy` and `threadgroup/nocopy`.
+  - Each row passed with empty failure reasons, `persistent_actual_used_no_copy=true`, `actual_buffer_mode=nocopy`, `used_no_copy_buffers=true`, `top1_match=true`, `top20_set_match=true`, `expected_top1=actual_top1=353`, and `mismatches=0`.
+  - Each row reported concrete actual-kernel evidence matching the requested kernel and `persistent_metal_summary.count=7`.
+  - Persistent-only measured-total rankings were empty by design, and one-shot wall/measured-total row fields were `null`.
+- Results:
+  - Persistent per-kernel-repeat ranking favored `threadgroup/nocopy` at median `11.98577880859375 ms` over `scalar/nocopy` at median `13.151600360870361 ms`.
+  - Delta: `-1.1658215522766113 ms`, relative delta `-8.864%` for `threadgroup/nocopy` versus `scalar/nocopy`.
+  - Persistent wall-per-kernel-repeat ranking also favored `threadgroup/nocopy` (`26.505350000225008 ms`) over `scalar/nocopy` (`28.04167415946722 ms`).
+  - Setup median slightly favored scalar (`18.728 ms`) over threadgroup (`19.421 ms`), so the kernel-loop win is not from setup timing.
+- Full verification commands run after the matrix:
+  - `python3 -m py_compile scripts/benchmark_metal_logits.py scripts/benchmark_metal_logits_matrix.py`
+  - `zig build`
+  - `zig build -Dtarget=x86_64-linux --summary all`
+  - `zig build -Denable-metal=true metal-smoke`
+  - `zig build -Denable-metal=true metal-logits-test -- --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk --kernel-repeats 2`
+  - `uv run python scripts/run_alignment_tests.py`
+- Verification results:
+  - Linux cross build summary succeeded.
+  - Metal smoke reported `mismatches=0`.
+  - Full-vocab Metal logits fixture retained `top1_match=true`, `top20_set_match=true`, and `mismatches=0`.
+  - HF bridge alignment remained intact for all three required prompts with max absolute logit diff `0.0`; sampling smoke remained `temperature=0.6`, `top_p=0.95`, `top_k=20`, candidate count `20`, selected token `353`.
+- Interpretation:
+  - The larger persistent-only sample strengthens the direction that `threadgroup/nocopy` is the better kernel-loop candidate on this Apple M4 for the current full-vocab LM-head fixture.
+  - The matrix still reports `ranking_confidence=low` because the current heuristic is tied to one-shot `repeats>=7`; this should be corrected in a follow-on benchmark-reporting goal for persistent-only evidence rather than manually claiming medium confidence.
+  - No defaults or runtime inference behavior changed.
+- Next optimization target: update the confidence heuristic/schema for persistent-only matrices so persistent-only evidence is labeled according to `persistent_samples` and `persistent_iters`, then consider an opt-in fixture-reuse or in-process multi-variant benchmark path to remove the remaining per-subprocess fixture load.
