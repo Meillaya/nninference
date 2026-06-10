@@ -320,3 +320,26 @@
   - `zig build -Dtarget=x86_64-linux --summary all`
   - `uv run python scripts/run_alignment_tests.py`
 - Next optimization target: continue from strict opt-in no-copy and compare kernel variants under this cleaner measurement contract; do not default no-copy until alignment/ownership requirements are made portable or explicitly page-aligned.
+
+## 2026-06-10 Resumed ultragoal G059 — strict Metal logits benchmark matrix harness
+- Added `scripts/benchmark_metal_logits_matrix.py`, a small wrapper that runs the existing `benchmark_metal_logits.py` across the 2×2 matrix of `scalar`/`threadgroup` kernels and `copy`/`nocopy` buffer modes.
+- The harness keeps the previous benchmark script as the single row executor, so each cell still runs the existing Metal full-vocab top-k correctness check, CPU fixture reference, strict no-copy actual-mode enforcement, and persistent benchmark path.
+- Added aggregate safeguards and decision-quality output:
+  - `matrix_version`, `verdict`, and `ranking_confidence`.
+  - Per-cell `variant_id`, `status`, failure reasons, mean/median timing summaries, actual no-copy evidence, and artifact path.
+  - Median measured-total ranking and persistent per-kernel-repeat ranking.
+  - Interaction summaries for no-copy-vs-copy within each kernel and threadgroup-vs-scalar within each buffer mode.
+  - A promotion note that low-repeat runs are directional only unless `repeats >= 7` and `persistent_iters >= 10`.
+- Independent review recommendations were incorporated: fail the matrix if any row fails correctness or buffer-mode evidence; rank only after all rows pass; keep wall/bridge timing separate from persistent command-buffer timing to avoid confusing host-transfer improvements with kernel improvements.
+- Validation run:
+  - `python3 -m py_compile scripts/benchmark_metal_logits.py scripts/benchmark_metal_logits_matrix.py`
+  - `uv run python scripts/benchmark_metal_logits_matrix.py --no-build --warmup 1 --repeats 2 --cpu-repeats 1 --kernel-repeats 5 --persistent-iters 3 --out artifacts/benchmarks/g059_matrix.json --artifact-dir artifacts/benchmarks/g059_matrix_runs`
+- Matrix verdict: `pass`; ranking confidence: `low` because this run used only two repeats and one persistent aggregate per cell.
+- Latest matrix highlights from `artifacts/benchmarks/g059_matrix.json`:
+  - All four variants passed full-vocab correctness: top-1 `353`, top-20 set match `true`, `mismatches=0`.
+  - `nocopy` rows reported `actual_used_no_copy_all=true` and `persistent_actual_used_no_copy=true`; `copy` rows reported no no-copy use.
+  - Median measured total ranking in this noisy sample: `scalar/nocopy` (`751.788 ms`), `threadgroup/nocopy` (`775.943 ms`), `threadgroup/copy` (`1596.812 ms`), `scalar/copy` (`1660.020 ms`).
+  - Persistent per-kernel-repeat ranking: `threadgroup/nocopy` (`15.010 ms`), `scalar/nocopy` (`16.298 ms`), `scalar/copy` (`31.651 ms`), `threadgroup/copy` (`33.023 ms`).
+  - Interaction summary shows a strong no-copy host/setup effect in both kernels, while the threadgroup-vs-scalar effect is mixed/noisy and should not drive a default change from this low-repeat sample.
+- Interpretation: the benchmark matrix harness is now a reusable gate for future default or kernel changes. The result supports continuing to investigate no-copy and threadgroup interactions, but does not yet justify promoting either default because the sample is low-confidence and device-specific.
+- Next optimization target: use the matrix harness with higher repeats or add repeated persistent samples to reduce noise before making any kernel/default change.
