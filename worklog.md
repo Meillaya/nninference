@@ -343,3 +343,35 @@
   - Interaction summary shows a strong no-copy host/setup effect in both kernels, while the threadgroup-vs-scalar effect is mixed/noisy and should not drive a default change from this low-repeat sample.
 - Interpretation: the benchmark matrix harness is now a reusable gate for future default or kernel changes. The result supports continuing to investigate no-copy and threadgroup interactions, but does not yet justify promoting either default because the sample is low-confidence and device-specific.
 - Next optimization target: use the matrix harness with higher repeats or add repeated persistent samples to reduce noise before making any kernel/default change.
+
+## 2026-06-10 Resumed ultragoal G060 — higher-confidence Metal logits matrix
+- Ran the strict matrix harness at the planned higher-confidence settings before changing any defaults:
+  - `repeats=7`
+  - `persistent_iters=10`
+  - `kernel_repeats=5`
+  - variants: `scalar/copy`, `scalar/nocopy`, `threadgroup/copy`, `threadgroup/nocopy`
+- During the first G060 run, the harness correctly passed all rows but still labeled ranking confidence as `low` despite meeting the high-repeat threshold. Fixed the harness confidence label so runs with `repeats >= 7` and `persistent_iters >= 10` report `ranking_confidence="medium"`; lower-repeat runs remain `low`.
+- Final validation command:
+  - `python3 -m py_compile scripts/benchmark_metal_logits_matrix.py`
+  - `uv run python scripts/benchmark_metal_logits_matrix.py --no-build --warmup 1 --repeats 7 --cpu-repeats 1 --kernel-repeats 5 --persistent-iters 10 --out artifacts/benchmarks/g060_matrix_r7_p10.json --artifact-dir artifacts/benchmarks/g060_matrix_r7_p10_runs`
+- Final matrix verdict: `pass`; ranking confidence: `medium`.
+- Correctness evidence:
+  - All four variants passed full-vocab correctness: top-1 `353`, top-20 set match `true`, `mismatches=0`.
+  - `nocopy` rows reported `actual_used_no_copy_all=true` and `persistent_actual_used_no_copy=true`.
+  - `copy` rows reported `actual_used_no_copy_all=false` and `persistent_actual_used_no_copy=false`.
+- Median measured-total ranking from `artifacts/benchmarks/g060_matrix_r7_p10.json`:
+  1. `threadgroup/nocopy`: `482.850 ms`
+  2. `scalar/nocopy`: `485.332 ms`
+  3. `threadgroup/copy`: `545.500 ms`
+  4. `scalar/copy`: `550.653 ms`
+- Persistent per-kernel-repeat ranking:
+  1. `threadgroup/nocopy`: `10.876 ms`
+  2. `threadgroup/copy`: `11.072 ms`
+  3. `scalar/nocopy`: `12.256 ms`
+  4. `scalar/copy`: `12.514 ms`
+- Interaction interpretation:
+  - No-copy improves median measured-total time in both kernels by ~11-12%, confirming a host/setup effect that composes with either kernel.
+  - Threadgroup improves persistent per-kernel-repeat time by ~11% under both copy and no-copy, but only improves median measured-total by ~0.5-0.9%; host/fixture overhead still dominates end-to-end CLI timing.
+  - No-copy has only ~1.8-2.1% persistent-loop effect, so its main win is not kernel math; it is bridge/setup transfer reduction.
+- Decision: do not change defaults in this milestone. The matrix now supports a follow-on goal to promote `threadgroup` as the kernel default **only if** an explicit full verification/review gate accepts the device-specific risk, and to keep `nocopy` opt-in until buffer ownership/alignment portability is resolved.
+- Next optimization target: evaluate a conservative default change or runtime auto-selection policy using the matrix evidence, while preserving `--kernel scalar` and `--buffer-mode copy` rollback paths.

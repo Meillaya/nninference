@@ -281,7 +281,12 @@ def main() -> None:
     failed = [row for row in rows if not row.get("ok")]
     rankable = [row for row in rows if row.get("ok") and row.get("persistent_ms_per_kernel_repeat") is not None]
     verdict = "pass" if not failed else "fail"
-    ranking_confidence = "low" if rankable else "unranked"
+    if not rankable:
+        ranking_confidence = "unranked"
+    elif args.repeats >= 7 and args.persistent_iters >= 10:
+        ranking_confidence = "medium"
+    else:
+        ranking_confidence = "low"
 
     summary = {
         "matrix_version": 1,
@@ -307,7 +312,7 @@ def main() -> None:
             interaction_summary(rows, "measured_total_median_ms"),
             interaction_summary(rows, "persistent_ms_per_kernel_repeat"),
         ],
-        "promotion_note": "low-confidence directional ranking only unless repeats >= 7 and persistent_iters >= 10",
+        "promotion_note": "medium-confidence directional ranking when repeats >= 7 and persistent_iters >= 10; require follow-on review before default changes",
         "settings": {
             "warmup": args.warmup,
             "repeats": args.repeats,
