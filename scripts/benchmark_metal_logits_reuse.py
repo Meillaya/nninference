@@ -145,8 +145,20 @@ def validate(args: argparse.Namespace, header: dict[str, Any], rows: list[dict[s
         if args.compare_mode == "full":
             if int(mismatches if mismatches is not None else -1) != 0:
                 reasons.append(f"{kernel}: mismatches={mismatches}")
+            if not positive_finite(row.get("full_per_logit_diff_ms")):
+                reasons.append(f"{kernel}: invalid full_per_logit_diff_ms")
         elif mismatches is not None:
             reasons.append(f"{kernel}: topk compare mode should not emit full mismatches")
+        elif row.get("full_per_logit_diff_ms") is not None:
+            reasons.append(f"{kernel}: topk compare mode should not emit full_per_logit_diff_ms")
+        for timing_key in ("host_compare_ms", "expected_topk_selection_ms", "actual_topk_selection_ms", "topk_selection_total_ms"):
+            if not positive_finite(row.get(timing_key)):
+                reasons.append(f"{kernel}: invalid {timing_key}")
+        expected_topk = float(row.get("expected_topk_selection_ms", 0.0))
+        actual_topk = float(row.get("actual_topk_selection_ms", 0.0))
+        topk_total = float(row.get("topk_selection_total_ms", -1.0))
+        if abs((expected_topk + actual_topk) - topk_total) > 0.001:
+            reasons.append(f"{kernel}: top-k timing components do not sum to topk_selection_total_ms")
         if int(row.get("kernel_repeats", -1)) != args.kernel_repeats:
             reasons.append(f"{kernel}: kernel repeats mismatch")
         if int(row.get("benchmark_iters", -1)) != args.benchmark_iters:

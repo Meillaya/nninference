@@ -186,8 +186,20 @@ def row_passed(
     if compare_mode == "full":
         if int(mismatches if mismatches is not None else -1) != 0:
             reasons.append(f"mismatches={mismatches}")
+        if not positive_number(record.get("full_per_logit_diff_ms")):
+            reasons.append("invalid full_per_logit_diff_ms")
     elif mismatches is not None:
         reasons.append(f"topk comparison mode unexpectedly emitted mismatches={mismatches}")
+    elif record.get("full_per_logit_diff_ms") is not None:
+        reasons.append("topk comparison mode unexpectedly emitted full_per_logit_diff_ms")
+    for timing_key in ("host_compare_ms", "expected_topk_selection_ms", "actual_topk_selection_ms", "topk_selection_total_ms"):
+        if not positive_number(record.get(timing_key)):
+            reasons.append(f"invalid timing: {timing_key}")
+    expected_topk = float(record.get("expected_topk_selection_ms", 0.0))
+    actual_topk = float(record.get("actual_topk_selection_ms", 0.0))
+    topk_total = float(record.get("topk_selection_total_ms", -1.0))
+    if abs((expected_topk + actual_topk) - topk_total) > 0.001:
+        reasons.append("top-k timing components do not sum to topk_selection_total_ms")
     if cpu.get("cpu_numpy_mismatches") != 0:
         reasons.append(f"cpu reference mismatches={cpu.get('cpu_numpy_mismatches')}")
     if cpu.get("cpu_numpy_top1") != record.get("expected_top1"):
@@ -310,6 +322,15 @@ def run_row(args: argparse.Namespace, kernel: str, buffer_mode: str, row_out: Pa
         "bridge_wall_mean_ms": mean_ms(report, "metal_cli_bridge_wall_ms"),
         "bridge_wall_median_ms": median_ms(report, "metal_cli_bridge_wall_ms"),
         "host_compare_median_ms": median_ms(report, "metal_cli_host_compare_ms"),
+        "full_per_logit_diff_median_ms": median_ms(report, "metal_cli_full_per_logit_diff_ms"),
+        "expected_topk_selection_median_ms": median_ms(report, "metal_cli_expected_topk_selection_ms"),
+        "actual_topk_selection_median_ms": median_ms(report, "metal_cli_actual_topk_selection_ms"),
+        "topk_selection_total_median_ms": median_ms(report, "metal_cli_topk_selection_total_ms"),
+        "persistent_host_compare_median_ms": persistent_summary_ms(report, "host_compare_ms"),
+        "persistent_full_per_logit_diff_median_ms": persistent_summary_ms(report, "full_per_logit_diff_ms"),
+        "persistent_expected_topk_selection_median_ms": persistent_summary_ms(report, "expected_topk_selection_ms"),
+        "persistent_actual_topk_selection_median_ms": persistent_summary_ms(report, "actual_topk_selection_ms"),
+        "persistent_topk_selection_total_median_ms": persistent_summary_ms(report, "topk_selection_total_ms"),
         "command_buffer_total_median_ms": median_ms(report, "metal_command_buffer_total_ms"),
         "command_buffer_per_repeat_mean_ms": mean_ms(report, "metal_command_buffer_per_repeat_ms"),
         "command_buffer_per_repeat_median_ms": median_ms(report, "metal_command_buffer_per_repeat_ms"),
@@ -370,6 +391,9 @@ def bottleneck_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "fixture_load": row.get("fixture_load_median_ms"),
             "bridge_wall": row.get("bridge_wall_median_ms"),
             "host_compare": row.get("host_compare_median_ms"),
+            "persistent_host_compare": row.get("persistent_host_compare_median_ms"),
+            "persistent_full_per_logit_diff": row.get("persistent_full_per_logit_diff_median_ms"),
+            "persistent_topk_selection_total": row.get("persistent_topk_selection_total_median_ms"),
         }
         observed = {key: value for key, value in buckets.items() if value is not None}
         dominant = max(observed, key=lambda key: float(observed[key])) if observed else None
@@ -386,6 +410,11 @@ def bottleneck_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 "persistent_ms_per_kernel_repeat": row.get("persistent_ms_per_kernel_repeat"),
                 "persistent_setup_median_ms": row.get("persistent_setup_median_ms"),
                 "persistent_wall_ms_per_kernel_repeat": row.get("persistent_wall_ms_per_kernel_repeat"),
+                "full_per_logit_diff_median_ms": row.get("full_per_logit_diff_median_ms"),
+                "topk_selection_total_median_ms": row.get("topk_selection_total_median_ms"),
+                "persistent_host_compare_median_ms": row.get("persistent_host_compare_median_ms"),
+                "persistent_full_per_logit_diff_median_ms": row.get("persistent_full_per_logit_diff_median_ms"),
+                "persistent_topk_selection_total_median_ms": row.get("persistent_topk_selection_total_median_ms"),
             }
         )
     likely_focus = max(dominant_counts, key=dominant_counts.get) if dominant_counts else None

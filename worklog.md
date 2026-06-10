@@ -983,3 +983,50 @@
 - Test-engineer subagent supplied a validation checklist; all required direct, negative, wrapper, matrix, command-mode, and full alignment checks from that checklist were run before commit.
 - Decision: keep top-k-only comparison as opt-in benchmark instrumentation, not as a default or correctness-gate replacement. The small benchmark sample did not show a clear host-compare timing win, so do not promote it beyond measurement control.
 - Next optimization target: use the clarified measurement controls to decide whether the next safe story should target top-k selection cost directly, command-buffer dispatch overhead, or kernel/layout work while preserving the full default correctness path.
+
+## 2026-06-10 Resumed ultragoal G078 — Metal logits host comparison timing breakdown
+- Added additive benchmark-only timing fields to the Metal logits CLI and wrappers.
+- Design:
+  - Kept `host_compare_ms` as the canonical total host comparison/validation window.
+  - Added flat optional phase timings in direct JSON rows: `full_per_logit_diff_ms`, `expected_topk_selection_ms`, `actual_topk_selection_ms`, and `topk_selection_total_ms`.
+  - Full mode remains the default and emits a finite `full_per_logit_diff_ms`; topk mode still requires `--expect-topk`, skips the full scan, and emits `full_per_logit_diff_ms=null`.
+  - Benchmark wrappers now summarize and validate the timing fields without changing ranking semantics or correctness gates.
+  - This is instrumentation only; no kernel, runtime default, HF bridge behavior, or acceptance gate changed.
+- Targeted validation commands:
+  - `zig fmt --check src/metal_logits_test.zig`
+  - `zig build -Denable-metal=true`
+  - `python3 -m py_compile scripts/benchmark_metal_logits.py scripts/benchmark_metal_logits_reuse.py scripts/benchmark_metal_command_modes.py scripts/benchmark_metal_logits_matrix.py scripts/run_alignment_tests.py`
+  - Direct default/full/topk/alias/negative CLI checks using `./zig-out/bin/metal_logits_v1 zig-out/metal/kernels.metallib --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk --kernel threadgroup --buffer-mode nocopy --kernel-repeats 2` plus explicit `--compare-mode full`, explicit `--compare-mode topk`, alias `--comparison-mode topk`, and negative `--compare-mode topk` without `--expect-topk`.
+  - `uv run python scripts/benchmark_metal_logits.py --no-build --kernel threadgroup --buffer-mode nocopy --kernel-repeats 5 --persistent-iters 10 --persistent-samples 3 --repeats 3 --cpu-repeats 1 --compare-mode full --out artifacts/benchmarks/g078_timing/benchmark_full.json`
+  - `uv run python scripts/benchmark_metal_logits.py --no-build --kernel threadgroup --buffer-mode nocopy --kernel-repeats 5 --persistent-iters 10 --persistent-samples 3 --repeats 3 --cpu-repeats 1 --compare-mode topk --out artifacts/benchmarks/g078_timing/benchmark_topk.json`
+  - `uv run python scripts/benchmark_metal_logits_reuse.py --no-build --samples 2 --kernel-repeats 5 --benchmark-iters 10 --benchmark-command-mode per_iter --kernels scalar,threadgroup --buffer-mode nocopy --compare-mode full --out artifacts/benchmarks/g078_timing/reuse_full.json`
+  - `uv run python scripts/benchmark_metal_logits_reuse.py --no-build --samples 2 --kernel-repeats 5 --benchmark-iters 10 --benchmark-command-mode per_iter --kernels scalar,threadgroup --buffer-mode nocopy --compare-mode topk --out artifacts/benchmarks/g078_timing/reuse_topk.json`
+  - `uv run python scripts/benchmark_metal_command_modes.py --no-build --samples 1 --kernel-repeats 5 --benchmark-iters 10 --kernels scalar,threadgroup --buffer-mode nocopy --compare-mode full --out artifacts/benchmarks/g078_timing/command_modes_full.json --artifact-dir artifacts/benchmarks/g078_timing/command_modes_full_runs`
+  - `uv run python scripts/benchmark_metal_command_modes.py --no-build --samples 1 --kernel-repeats 5 --benchmark-iters 10 --kernels scalar,threadgroup --buffer-mode nocopy --compare-mode topk --out artifacts/benchmarks/g078_timing/command_modes_topk.json --artifact-dir artifacts/benchmarks/g078_timing/command_modes_topk_runs`
+  - `uv run python scripts/benchmark_metal_logits_matrix.py --no-build --persistent-only --warmup 0 --repeats 0 --cpu-repeats 1 --kernel-repeats 5 --persistent-iters 10 --persistent-samples 1 --kernels scalar,threadgroup --buffer-modes nocopy --compare-mode full --out artifacts/benchmarks/g078_timing/matrix_full.json --artifact-dir artifacts/benchmarks/g078_timing/matrix_full_runs`
+  - `uv run python scripts/benchmark_metal_logits_matrix.py --no-build --persistent-only --warmup 0 --repeats 0 --cpu-repeats 1 --kernel-repeats 5 --persistent-iters 10 --persistent-samples 2 --kernels scalar,threadgroup --buffer-modes nocopy --compare-mode topk --out artifacts/benchmarks/g078_timing/matrix_topk.json --artifact-dir artifacts/benchmarks/g078_timing/matrix_topk_runs`
+- Targeted validation results:
+  - Direct default and explicit full retained `compare_mode=full`, `full_compare_ran=true`, top-1/top-20 matches, expected/actual top-1 `353`, numeric diff fields, `mismatches=0`, finite `full_per_logit_diff_ms`, and finite top-k selection timings.
+  - Direct topk and alias topk emitted `compare_mode=topk`, `full_compare_ran=false`, `mismatches=null`, diff fields `null`, `full_per_logit_diff_ms=null`, finite top-k selection timings, and top-1/top-20 pass.
+  - Negative direct `--compare-mode topk` without `--expect-topk` failed with `TopKCompareModeRequiresExpectTopK`.
+  - `benchmark_metal_logits.py` full sample medians: host compare `23.837375 ms`; full per-logit diff `1.038875 ms`; top-k selection total `22.159582999999998 ms`.
+  - `benchmark_metal_logits.py` topk sample medians: host compare `20.854 ms`; top-k selection total `20.188874 ms`.
+  - Reusable-fixture full and topk reports passed with `verdict=pass`, stable compare-mode headers/rows, no-copy evidence, top-k checks, and mode-correct timing fields.
+  - Command-mode full and topk reports passed with both `per_iter` and `batched` child reports preserving compare mode and timing fields.
+  - Matrix full and topk reports passed. Persistent-only topk threadgroup row reported persistent host compare median `24.132708 ms` and persistent top-k selection total median `23.387124999999997 ms`, confirming top-k selection dominates host comparison in this measurement path.
+  - Persistent kernel ranking stayed `threadgroup/nocopy` ahead of `scalar/nocopy`: full matrix `10.632479190826416 ms` vs `12.149639129638672 ms`; topk matrix `10.52527904510498 ms` vs `11.98017954826355 ms`.
+- Full verification commands:
+  - `zig build`
+  - `zig build -Dtarget=x86_64-linux --summary all`
+  - `zig build -Denable-metal=true metal-smoke`
+  - `zig build -Denable-metal=true metal-logits-test -- --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk --kernel-repeats 2`
+  - `uv run python scripts/run_alignment_tests.py`
+- Full verification results:
+  - Linux cross build succeeded.
+  - Metal smoke reported mismatches `0`.
+  - Full-vocab Metal logits fixture ran in default full comparison mode and retained `top1_match=true`, `top20_set_match=true`, expected/actual top-1 `353`, and mismatches `0`; timing fields were present in the fixture output.
+  - HF bridge alignment remained intact for all three required prompts with max absolute logit diff `0.0`; sampling smoke remained `temperature=0.6`, `top_p=0.95`, `top_k=20`, candidate count `20`, selected token `353`.
+- Subagent evidence:
+  - Architect recommended keeping instrumentation inside `runCase`, preserving `host_compare_ms` as total, and adding flat optional fields; implemented that shape.
+  - Test-engineer supplied direct/wrapper/full-gate validation checklist; those checks were run before commit.
+- Decision: keep the timing breakdown. Evidence points to top-k selection, not the full per-logit diff scan, as the dominant host-comparison cost. The next safe optimization target should therefore be a reversible top-k selection improvement or GPU-side top-k measurement, while retaining full per-logit comparison as the default acceptance gate.

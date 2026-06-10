@@ -396,7 +396,13 @@ fn runCase(io: Io, stdout: *Io.Writer, allocator: std.mem.Allocator, metallib_pa
 
     const compare_start = Io.Clock.awake.now(io);
     const full_compare_ran = compare_mode == .full;
-    const diff = if (full_compare_ran) compare(fixture.expected, actual, fixture.tol) else Diff{};
+    var full_per_logit_diff_ms: ?f64 = null;
+    var diff = Diff{};
+    if (full_compare_ran) {
+        const full_diff_start = Io.Clock.awake.now(io);
+        diff = compare(fixture.expected, actual, fixture.tol);
+        full_per_logit_diff_ms = elapsedMsSince(io, full_diff_start);
+    }
     if (full_compare_ran and diff.mismatches != 0) {
         try stdout.print(
             "metal logits mismatch: fixture={s} mismatches={d} max_abs={d} max_rel={d}\n",
@@ -411,9 +417,17 @@ fn runCase(io: Io, stdout: *Io.Writer, allocator: std.mem.Allocator, metallib_pa
     var actual_top: [20]usize = undefined;
     const top1_match = expected_top1 == actual_top1;
     var top20_set_match = true;
+    var expected_topk_selection_ms: ?f64 = null;
+    var actual_topk_selection_ms: ?f64 = null;
+    var topk_selection_total_ms: ?f64 = null;
     if (expect_topk) {
+        const expected_topk_start = Io.Clock.awake.now(io);
         fillTopK(fixture.expected, &expected_top);
+        expected_topk_selection_ms = elapsedMsSince(io, expected_topk_start);
+        const actual_topk_start = Io.Clock.awake.now(io);
         fillTopK(actual, &actual_top);
+        actual_topk_selection_ms = elapsedMsSince(io, actual_topk_start);
+        topk_selection_total_ms = expected_topk_selection_ms.? + actual_topk_selection_ms.?;
         top20_set_match = sameSet(&expected_top, &actual_top);
         if (!top1_match or !top20_set_match) {
             try stdout.print(
@@ -456,6 +470,30 @@ fn runCase(io: Io, stdout: *Io.Writer, allocator: std.mem.Allocator, metallib_pa
         );
     } else {
         try stdout.writeAll(",\"max_abs_diff\":null,\"max_rel_diff\":null,\"mismatches\":null");
+    }
+    try stdout.writeAll(",\"full_per_logit_diff_ms\":");
+    if (full_per_logit_diff_ms) |ms| {
+        try stdout.print("{d}", .{ms});
+    } else {
+        try stdout.writeAll("null");
+    }
+    try stdout.writeAll(",\"expected_topk_selection_ms\":");
+    if (expected_topk_selection_ms) |ms| {
+        try stdout.print("{d}", .{ms});
+    } else {
+        try stdout.writeAll("null");
+    }
+    try stdout.writeAll(",\"actual_topk_selection_ms\":");
+    if (actual_topk_selection_ms) |ms| {
+        try stdout.print("{d}", .{ms});
+    } else {
+        try stdout.writeAll("null");
+    }
+    try stdout.writeAll(",\"topk_selection_total_ms\":");
+    if (topk_selection_total_ms) |ms| {
+        try stdout.print("{d}", .{ms});
+    } else {
+        try stdout.writeAll("null");
     }
     try stdout.print(
         ",\"tolerance_max_abs\":{d},\"tolerance_max_rel\":{d},\"expected_top1\":{d},\"actual_top1\":{d},\"top1_match\":{},\"top20_set_match\":{},\"kernel_repeats\":{d},\"elapsed_ms\":{d},\"elapsed_ms_per_repeat\":{d},\"fixture_load_ms\":{d},\"metal_bridge_wall_ms\":{d},\"host_compare_ms\":{d},\"total_cli_measured_ms\":{d}",

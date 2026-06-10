@@ -89,6 +89,15 @@ def summarize_or_none(values: list[float]) -> dict[str, float] | None:
     return summarize(values) if values else None
 
 
+def numeric_field(records: list[dict], key: str) -> list[float]:
+    values: list[float] = []
+    for record in records:
+        value = record.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            values.append(float(value))
+    return values
+
+
 def run_metal(args: argparse.Namespace) -> tuple[list[float], list[float], list[dict]]:
     cmd = [
         args.cli,
@@ -191,6 +200,11 @@ def persistent_summary(persistent_runs: list[tuple[float, dict]], args: argparse
         "elapsed_ms": summarize([float(record["persistent_elapsed_ms"]) for record in records]),
         "persistent_ms_per_iter": summarize([float(record["persistent_ms_per_iter"]) for record in records]),
         "persistent_ms_per_kernel_repeat": summarize([float(record["persistent_ms_per_kernel_repeat"]) for record in records]),
+        "host_compare_ms": summarize([float(record["host_compare_ms"]) for record in records]),
+        "full_per_logit_diff_ms": summarize_or_none(numeric_field(records, "full_per_logit_diff_ms")),
+        "expected_topk_selection_ms": summarize_or_none(numeric_field(records, "expected_topk_selection_ms")),
+        "actual_topk_selection_ms": summarize_or_none(numeric_field(records, "actual_topk_selection_ms")),
+        "topk_selection_total_ms": summarize_or_none(numeric_field(records, "topk_selection_total_ms")),
         "wall_ms_per_iter": summarize([wall_ms / args.persistent_iters for wall_ms, _ in persistent_runs]),
         "wall_ms_per_kernel_repeat": summarize([wall_ms / (args.persistent_iters * args.kernel_repeats) for wall_ms, _ in persistent_runs]),
         "actual_kernels_seen": sorted({record.get("actual_kernel") for record in records if record.get("actual_kernel") is not None}),
@@ -243,6 +257,10 @@ def main() -> None:
     fixture_load_ms = [float(record["fixture_load_ms"]) for record in records if "fixture_load_ms" in record]
     bridge_wall_ms = [float(record["metal_bridge_wall_ms"]) for record in records if "metal_bridge_wall_ms" in record]
     host_compare_ms = [float(record["host_compare_ms"]) for record in records if "host_compare_ms" in record]
+    full_per_logit_diff_ms = numeric_field(records, "full_per_logit_diff_ms")
+    expected_topk_selection_ms = numeric_field(records, "expected_topk_selection_ms")
+    actual_topk_selection_ms = numeric_field(records, "actual_topk_selection_ms")
+    topk_selection_total_ms = numeric_field(records, "topk_selection_total_ms")
     measured_total_ms = [float(record["total_cli_measured_ms"]) for record in records if "total_cli_measured_ms" in record]
     cpu = run_cpu_fixture(fixture, args.cpu_repeats)
     if args.buffer_mode == "nocopy":
@@ -284,6 +302,10 @@ def main() -> None:
         "metal_cli_fixture_load_ms": summarize_or_none(fixture_load_ms),
         "metal_cli_bridge_wall_ms": summarize_or_none(bridge_wall_ms),
         "metal_cli_host_compare_ms": summarize_or_none(host_compare_ms),
+        "metal_cli_full_per_logit_diff_ms": summarize_or_none(full_per_logit_diff_ms),
+        "metal_cli_expected_topk_selection_ms": summarize_or_none(expected_topk_selection_ms),
+        "metal_cli_actual_topk_selection_ms": summarize_or_none(actual_topk_selection_ms),
+        "metal_cli_topk_selection_total_ms": summarize_or_none(topk_selection_total_ms),
         "metal_cli_measured_total_ms": summarize_or_none(measured_total_ms),
         "metal_last_record": metal_last_record,
         "persistent_metal": None
