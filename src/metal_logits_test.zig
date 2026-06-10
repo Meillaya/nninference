@@ -567,19 +567,108 @@ fn argmax(values: []const f32) usize {
 fn fillTopK(values: []const f32, out: *[20]usize) void {
     var scores: [20]f32 = @splat(-std.math.inf(f32));
     out.* = @splat(std.math.maxInt(usize));
+    var filled: usize = 0;
+    var min_pos: usize = 0;
     for (values, 0..) |value, index| {
-        var pos: usize = 0;
-        while (pos < scores.len) : (pos += 1) {
-            if (value > scores[pos]) {
-                var move: usize = scores.len - 1;
-                while (move > pos) : (move -= 1) {
-                    scores[move] = scores[move - 1];
-                    out[move] = out[move - 1];
-                }
-                scores[pos] = value;
-                out[pos] = index;
-                break;
+        if (filled < scores.len) {
+            if (insertTopK(value, index, &scores, out)) {
+                filled += 1;
+                if (filled == scores.len) min_pos = minTopKPos(&scores, out);
             }
+        } else if (value > scores[min_pos]) {
+            scores[min_pos] = value;
+            out[min_pos] = index;
+            min_pos = minTopKPos(&scores, out);
+        }
+    }
+}
+
+fn insertTopK(value: f32, index: usize, scores: *[20]f32, out: *[20]usize) bool {
+    var pos: usize = 0;
+    while (pos < scores.len) : (pos += 1) {
+        if (value > scores[pos]) {
+            var move: usize = scores.len - 1;
+            while (move > pos) : (move -= 1) {
+                scores[move] = scores[move - 1];
+                out[move] = out[move - 1];
+            }
+            scores[pos] = value;
+            out[pos] = index;
+            return true;
+        }
+    }
+    return false;
+}
+
+fn minTopKPos(scores: *const [20]f32, out: *const [20]usize) usize {
+    var min_pos: usize = 0;
+    var min_value = scores[0];
+    for (scores[1..], 1..) |value, index| {
+        if (value < min_value or (value == min_value and out[index] > out[min_pos])) {
+            min_value = value;
+            min_pos = index;
+        }
+    }
+    return min_pos;
+}
+
+test "fillTopK matches stable top-k set reference" {
+    const cases = [_][25]f32{
+        .{
+            0,  1,  2,  3,  4,
+            5,  6,  7,  8,  9,
+            10, 11, 12, 13, 14,
+            15, 16, 17, 18, 19,
+            20, 21, 22, 23, 24,
+        },
+        .{
+            24, 23, 22, 21, 20,
+            19, 18, 17, 16, 15,
+            14, 13, 12, 11, 10,
+            9,  8,  7,  6,  5,
+            4,  3,  2,  1,  0,
+        },
+        .{
+            1, 1, 1, 1, 1,
+            1, 1, 1, 1, 1,
+            1, 1, 1, 1, 1,
+            1, 1, 1, 1, 1,
+            1, 1, 1, 1, 1,
+        },
+        .{
+            1, 1, 1, 1, 1,
+            1, 1, 1, 1, 1,
+            1, 1, 1, 1, 1,
+            1, 1, 1, 1, 1,
+            2, 0, 0, 0, 0,
+        },
+        .{
+            3, 1, 3, 1, 3,
+            1, 3, 1, 3, 1,
+            3, 1, 3, 1, 3,
+            1, 3, 1, 3, 1,
+            4, 2, 2, 2, 2,
+        },
+    };
+
+    for (cases) |values| {
+        var expected: [20]usize = undefined;
+        var actual: [20]usize = undefined;
+        referenceFillTopK(&values, &expected);
+        fillTopK(&values, &actual);
+        try std.testing.expect(sameSet(&expected, &actual));
+    }
+}
+
+fn referenceFillTopK(values: []const f32, out: *[20]usize) void {
+    out.* = @splat(std.math.maxInt(usize));
+    for (values, 0..) |value, index| {
+        var better: usize = 0;
+        for (values, 0..) |other, other_index| {
+            if (other > value or (other == value and other_index < index)) better += 1;
+        }
+        if (better < out.len) {
+            out[better] = index;
         }
     }
 }

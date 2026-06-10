@@ -1030,3 +1030,47 @@
   - Architect recommended keeping instrumentation inside `runCase`, preserving `host_compare_ms` as total, and adding flat optional fields; implemented that shape.
   - Test-engineer supplied direct/wrapper/full-gate validation checklist; those checks were run before commit.
 - Decision: keep the timing breakdown. Evidence points to top-k selection, not the full per-logit diff scan, as the dominant host-comparison cost. The next safe optimization target should therefore be a reversible top-k selection improvement or GPU-side top-k measurement, while retaining full per-logit comparison as the default acceptance gate.
+
+## 2026-06-10 Resumed ultragoal G079 — Faster host top-k selection for Metal logits validation
+- Optimized the host-side `fillTopK` helper used by Metal logits validation.
+- Design:
+  - Replaced the previous sorted-insertion scan over all 20 slots for every vocab row with a fixed-size candidate set that tracks the current minimum top-k slot.
+  - Non-replacing logits now pay one threshold comparison instead of scanning/shifting the 20-entry list.
+  - Preserved the prior stable semantics: higher score wins, equal score keeps the earlier index. The minimum-slot search evicts the latest tied boundary item so later equal values do not displace earlier ones.
+  - Kept default comparison mode as full per-logit validation; top-k-only mode remains opt-in and gated by `--expect-topk`.
+- Added test coverage:
+  - Added `test "fillTopK matches stable top-k set reference"` in `src/metal_logits_test.zig`.
+  - The oracle is rank-based rather than a copy of the old sorted-insertion implementation: an index belongs in top-20 iff fewer than 20 values are greater, with equal scores broken by earlier index.
+  - Cases cover ascending, descending, all-equal first-20 stability, replacement after first 20 tied lows, and mixed boundary ties.
+- Targeted validation commands:
+  - `zig fmt src/metal_logits_test.zig`
+  - `zig test -Isrc src/metal_logits_test.zig`
+  - `zig build -Denable-metal=true`
+  - `./zig-out/bin/metal_logits_v1 zig-out/metal/kernels.metallib --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk --kernel threadgroup --buffer-mode nocopy --kernel-repeats 2 --compare-mode full > artifacts/benchmarks/g079_fast_topk/direct_full.json`
+  - `./zig-out/bin/metal_logits_v1 zig-out/metal/kernels.metallib --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk --kernel threadgroup --buffer-mode nocopy --kernel-repeats 2 --compare-mode topk > artifacts/benchmarks/g079_fast_topk/direct_topk.json`
+  - `uv run python scripts/benchmark_metal_logits.py --no-build --kernel threadgroup --buffer-mode nocopy --kernel-repeats 5 --persistent-iters 10 --persistent-samples 3 --repeats 3 --cpu-repeats 1 --compare-mode full --out artifacts/benchmarks/g079_fast_topk/benchmark_full.json`
+  - `uv run python scripts/benchmark_metal_logits.py --no-build --kernel threadgroup --buffer-mode nocopy --kernel-repeats 5 --persistent-iters 10 --persistent-samples 3 --repeats 3 --cpu-repeats 1 --compare-mode topk --out artifacts/benchmarks/g079_fast_topk/benchmark_topk.json`
+- Targeted validation results:
+  - Unit test passed: `1/1 metal_logits_test.test.fillTopK matches stable top-k set reference...OK`.
+  - Direct full mode retained `top1_match=true`, `top20_set_match=true`, expected/actual top-1 `353`, `mismatches=0`, and default full comparison fields. Direct full timing: `host_compare_ms=3.077333`, `full_per_logit_diff_ms=1.161625`, `topk_selection_total_ms=1.156917`.
+  - Direct topk mode retained `top1_match=true`, `top20_set_match=true`, expected/actual top-1 `353`, `mismatches=null`, and no full diff scan. Direct topk timing: `host_compare_ms=2.017708`, `topk_selection_total_ms=1.1692490000000002`.
+  - Wrapper full benchmark (`threadgroup`/`nocopy`, 3 samples) retained top-1/top-20 checks and `mismatches=0`. CLI medians: host compare `2.864083 ms`, top-k selection total `1.143501 ms`, full diff `1.043209 ms`; persistent medians: host compare `2.83425 ms`, top-k selection total `1.055583 ms`, per-kernel-repeat `10.92210054397583 ms`.
+  - Wrapper topk benchmark (`threadgroup`/`nocopy`, 3 samples) retained top-1/top-20 checks. CLI medians: host compare `1.807459 ms`, top-k selection total `1.0300829999999999 ms`; persistent medians: host compare `2.01775 ms`, top-k selection total `1.160917 ms`, per-kernel-repeat `10.71012020111084 ms`.
+  - Compared with G078, the host top-k selection bottleneck dropped from ~20-23 ms to ~1.0-1.2 ms while keeping the same default full correctness path.
+- Full verification commands:
+  - `zig build`
+  - `zig build -Dtarget=x86_64-linux --summary all`
+  - `zig build -Denable-metal=true metal-smoke`
+  - `zig build -Denable-metal=true metal-logits-test -- --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk --kernel-repeats 2`
+  - `uv run python scripts/run_alignment_tests.py`
+  - `uv run python scripts/benchmark_metal_logits.py --warmup 1 --repeats 2 --cpu-repeats 1 --kernel-repeats 5 --out artifacts/benchmarks/g079_fast_topk/periodic_required_benchmark.json`
+- Full verification results:
+  - Linux cross build succeeded with `Build Summary: 3/3 steps succeeded`.
+  - Metal smoke reported `mismatches=0`.
+  - Default full Metal logits fixture retained top-1/top-20 checks, expected/actual top-1 `353`, and `mismatches=0`; timing fields remained present.
+  - HF bridge alignment remained intact for all three required prompts with max absolute logit diff `0.0`; sampling smoke remained `temperature=0.6`, `top_p=0.95`, `top_k=20`, candidate count `20`, selected token `353`.
+  - Required periodic benchmark retained default full mode correctness with scalar/copy defaults: top-1/top-20 checks true, `mismatches=0`, host compare median `2.8034165 ms`, top-k selection total median `1.0276260000000002 ms`, full diff median `1.0594795000000001 ms`.
+- Subagent evidence:
+  - Test-engineer recommended the direct Zig unit-test path and a rank-based top-k oracle; implemented that stronger oracle and documented the command.
+  - Code-reviewer returned `APPROVE`, with no findings; it specifically checked stable top-20 set semantics, tie handling, `NaN`/`-inf` behavior, default compare-mode safety, and performance rationale.
+- Decision: keep the optimization. It removes the measured host top-k validation bottleneck without weakening default full comparison or HF alignment. Remaining throughput focus should move back toward Metal command/kernel behavior because host top-k selection is no longer the dominant validation cost.
