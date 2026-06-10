@@ -191,3 +191,31 @@
 - Latest persistent-mode sample: setup `97.151 ms`; measured persistent loop `200.001 ms` for `3` iterations × `5` kernel repeats; `persistent_ms_per_kernel_repeat=13.333 ms`. The same benchmark run's one-shot command-buffer per-repeat mean was `20.802 ms`, while the one-shot CLI wall mean remained `2352.716 ms` because the process still loads the ~971 MiB fixture once.
 - Interpretation: this is a measurement/runtime-ownership milestone rather than a full end-to-end throughput win. It proves buffer/pipeline reuse inside one process and gives a cleaner persistent command-buffer signal; it does not yet remove the initial fixture file read or integrate Metal into `infer_cpu_v1`.
 - Next optimization target: use this persistent measurement path to evaluate kernel-level changes or reduce fixture load/transfer overhead further, while keeping the one-shot CLI and HF bridge as rollback/reference paths.
+
+## 2026-06-10 Resumed ultragoal G053 — opt-in threadgroup LM-head kernel prototype
+- Added an alternate Metal LM-head kernel, `logits_matmul_tg`, exposed through `metal_logits_v1 --kernel threadgroup`. The existing scalar row-per-thread kernel remains the default and rollback path (`--kernel scalar`).
+- The threadgroup kernel assigns one Metal threadgroup per output row and reduces partial dot products across 256 threads. This is intentionally opt-in because it increases dispatch/threadgroup pressure and may be platform-sensitive.
+- Updated the Objective-C bridge and benchmark harness so both one-shot and persistent benchmark paths accept a kernel selection. Rebuilt the shader library explicitly with `zig build -Denable-metal=true metal-lib`; note that `zig build -Denable-metal=true` installs the CLI but does not by itself refresh `zig-out/metal/kernels.metallib`.
+- Correctness results:
+  - Tiny scalar and threadgroup fixtures passed with `mismatches=0`.
+  - Full-vocab threadgroup fixture passed: expected/actual top-1 `353`, top-20 set match `true`, `mismatches=0`, `max_abs_diff=0.0000019073486`.
+  - HF bridge alignment still passed for the three required prompts with max absolute logit diff `0.0`.
+- Comparable benchmark samples with `--kernel-repeats 3 --persistent-iters 3`:
+  - Scalar persistent path: `persistent_ms_per_kernel_repeat=13.458 ms`; one-shot command-buffer per-repeat mean `19.152 ms`.
+  - Threadgroup persistent path: `persistent_ms_per_kernel_repeat=13.125 ms`; one-shot command-buffer per-repeat mean `19.473 ms`.
+- Interpretation: the threadgroup kernel is correct and gives a small (~2.5%) persistent-loop improvement in this sample, but it is below the predeclared threshold for a stable performance win and the one-shot metric is slightly worse/noisy. Keep it as an experimental opt-in kernel for future profiling rather than making it the default.
+- Verification commands run:
+  - `zig fmt src/metal_logits_test.zig`
+  - `zig build -Denable-metal=true`
+  - `zig build -Denable-metal=true metal-lib`
+  - `./zig-out/bin/metal_logits_v1 zig-out/metal/kernels.metallib --kernel scalar`
+  - `./zig-out/bin/metal_logits_v1 zig-out/metal/kernels.metallib --kernel threadgroup`
+  - `./zig-out/bin/metal_logits_v1 zig-out/metal/kernels.metallib --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk --kernel threadgroup --kernel-repeats 1`
+  - `uv run python scripts/benchmark_metal_logits.py --warmup 1 --repeats 2 --cpu-repeats 1 --kernel scalar --kernel-repeats 3 --persistent-iters 3 --out artifacts/benchmarks/g053_scalar_compare.json`
+  - `uv run python scripts/benchmark_metal_logits.py --warmup 1 --repeats 2 --cpu-repeats 1 --kernel threadgroup --kernel-repeats 3 --persistent-iters 3 --out artifacts/benchmarks/g053_threadgroup_compare.json`
+  - `zig build`
+  - `zig build -Dtarget=x86_64-linux --summary all`
+  - `./zig-out/bin/metal_logits_v1 zig-out/metal/kernels.metallib --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk --kernel scalar --kernel-repeats 2`
+  - `./zig-out/bin/metal_logits_v1 zig-out/metal/kernels.metallib --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk --kernel threadgroup --kernel-repeats 2`
+  - `uv run python scripts/run_alignment_tests.py`
+- Next optimization target: G054 should focus on fixture memory layout/transfer overhead, because process-level fixture load still dominates end-to-end wall time.

@@ -39,6 +39,15 @@ static void nn_fill_probe(id<MTLDevice> device, id<MTLComputePipelineState> pipe
     }
 }
 
+static const char *nn_logits_kernel_name_or_default(const char *kernel_name) {
+    if (kernel_name == NULL || kernel_name[0] == '\0') return "logits_matmul";
+    return kernel_name;
+}
+
+static bool nn_logits_kernel_is_threadgroup(const char *kernel_name) {
+    return strcmp(kernel_name, "logits_matmul_tg") == 0;
+}
+
 int nn_metal_probe(NnMetalProbe *out_probe, char *err, size_t err_len) {
     @autoreleasepool {
         nn_clear_error(err, err_len);
@@ -168,6 +177,7 @@ int nn_metal_run_vector_add(
 
 int nn_metal_run_logits_matmul(
     const char *metallib_path,
+    const char *kernel_name,
     const float *hidden,
     const float *weights_row_major,
     float *logits_out,
@@ -186,6 +196,8 @@ int nn_metal_run_logits_matmul(
             return 20;
         }
         if (repeat_count == 0) repeat_count = 1;
+        const char *selected_kernel = nn_logits_kernel_name_or_default(kernel_name);
+        const bool threadgroup_kernel = nn_logits_kernel_is_threadgroup(selected_kernel);
 
         id<MTLDevice> device = MTLCreateSystemDefaultDevice();
         if (device == nil) {
@@ -201,9 +213,9 @@ int nn_metal_run_logits_matmul(
             return 22;
         }
 
-        id<MTLFunction> function = [library newFunctionWithName:@"logits_matmul"];
+        id<MTLFunction> function = [library newFunctionWithName:[NSString stringWithUTF8String:selected_kernel]];
         if (function == nil) {
-            nn_set_error(err, err_len, "Metal function logits_matmul not found");
+            nn_set_error(err, err_len, "Metal function %s not found", selected_kernel);
             return 23;
         }
 
@@ -248,13 +260,20 @@ int nn_metal_run_logits_matmul(
         NSUInteger threads_per_group = [pipeline maxTotalThreadsPerThreadgroup];
         if (threads_per_group > 256) threads_per_group = 256;
         if (threads_per_group == 0) threads_per_group = 1;
+        if (threadgroup_kernel && threads_per_group < 256) {
+            nn_set_error(err, err_len, "logits_matmul_tg requires at least 256 threads per threadgroup");
+            return 28;
+        }
         if (threads_per_group > rows) threads_per_group = rows;
+        if (threadgroup_kernel) threads_per_group = 256;
         MTLSize threadgroup_size = MTLSizeMake(threads_per_group, 1, 1);
         MTLSize grid_size = MTLSizeMake(rows, 1, 1);
 
         CFAbsoluteTime start_time = CFAbsoluteTimeGetCurrent();
         for (uint32_t repeat = 0; repeat < repeat_count; repeat += 1) {
-            if ([encoder respondsToSelector:@selector(dispatchThreads:threadsPerThreadgroup:)]) {
+            if (threadgroup_kernel) {
+                [encoder dispatchThreadgroups:MTLSizeMake(rows, 1, 1) threadsPerThreadgroup:threadgroup_size];
+            } else if ([encoder respondsToSelector:@selector(dispatchThreads:threadsPerThreadgroup:)]) {
                 [encoder dispatchThreads:grid_size threadsPerThreadgroup:threadgroup_size];
             } else {
                 const NSUInteger group_count = ((NSUInteger)rows + threads_per_group - 1) / threads_per_group;
@@ -283,6 +302,7 @@ int nn_metal_run_logits_matmul(
 
 int nn_metal_benchmark_logits_matmul_persistent(
     const char *metallib_path,
+    const char *kernel_name,
     const float *hidden,
     const float *weights_row_major,
     float *logits_out,
@@ -304,6 +324,8 @@ int nn_metal_benchmark_logits_matmul_persistent(
         }
         if (iterations == 0) iterations = 1;
         if (repeat_count == 0) repeat_count = 1;
+        const char *selected_kernel = nn_logits_kernel_name_or_default(kernel_name);
+        const bool threadgroup_kernel = nn_logits_kernel_is_threadgroup(selected_kernel);
 
         CFAbsoluteTime setup_start = CFAbsoluteTimeGetCurrent();
         id<MTLDevice> device = MTLCreateSystemDefaultDevice();
@@ -320,9 +342,9 @@ int nn_metal_benchmark_logits_matmul_persistent(
             return 32;
         }
 
-        id<MTLFunction> function = [library newFunctionWithName:@"logits_matmul"];
+        id<MTLFunction> function = [library newFunctionWithName:[NSString stringWithUTF8String:selected_kernel]];
         if (function == nil) {
-            nn_set_error(err, err_len, "Metal function logits_matmul not found");
+            nn_set_error(err, err_len, "Metal function %s not found", selected_kernel);
             return 33;
         }
 
@@ -359,7 +381,12 @@ int nn_metal_benchmark_logits_matmul_persistent(
         NSUInteger threads_per_group = [pipeline maxTotalThreadsPerThreadgroup];
         if (threads_per_group > 256) threads_per_group = 256;
         if (threads_per_group == 0) threads_per_group = 1;
+        if (threadgroup_kernel && threads_per_group < 256) {
+            nn_set_error(err, err_len, "logits_matmul_tg requires at least 256 threads per threadgroup");
+            return 39;
+        }
         if (threads_per_group > rows) threads_per_group = rows;
+        if (threadgroup_kernel) threads_per_group = 256;
         MTLSize threadgroup_size = MTLSizeMake(threads_per_group, 1, 1);
         MTLSize grid_size = MTLSizeMake(rows, 1, 1);
         CFAbsoluteTime setup_end = CFAbsoluteTimeGetCurrent();
@@ -380,7 +407,9 @@ int nn_metal_benchmark_logits_matmul_persistent(
             [encoder setBuffer:dims_buffer offset:0 atIndex:3];
 
             for (uint32_t repeat = 0; repeat < repeat_count; repeat += 1) {
-                if ([encoder respondsToSelector:@selector(dispatchThreads:threadsPerThreadgroup:)]) {
+                if (threadgroup_kernel) {
+                    [encoder dispatchThreadgroups:MTLSizeMake(rows, 1, 1) threadsPerThreadgroup:threadgroup_size];
+                } else if ([encoder respondsToSelector:@selector(dispatchThreads:threadsPerThreadgroup:)]) {
                     [encoder dispatchThreads:grid_size threadsPerThreadgroup:threadgroup_size];
                 } else {
                     const NSUInteger group_count = ((NSUInteger)rows + threads_per_group - 1) / threads_per_group;

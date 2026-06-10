@@ -32,17 +32,37 @@ const Fixture = struct {
     }
 };
 
+const Kernel = enum {
+    scalar,
+    threadgroup,
+
+    fn metalName(self: Kernel) [:0]const u8 {
+        return switch (self) {
+            .scalar => "logits_matmul",
+            .threadgroup => "logits_matmul_tg",
+        };
+    }
+
+    fn label(self: Kernel) []const u8 {
+        return switch (self) {
+            .scalar => "scalar",
+            .threadgroup => "threadgroup",
+        };
+    }
+};
+
 const Options = struct {
     metallib_path: []const u8,
     fixture_path: ?[]const u8 = null,
     expect_topk: bool = false,
     kernel_repeats: u32 = 1,
     benchmark_iters: u32 = 0,
+    kernel: Kernel = .scalar,
 };
 
 fn usage() []const u8 {
     return
-    \\metal_logits_v1 <metallib> [--fixture artifacts/.../fixture.bin] [--expect-topk] [--kernel-repeats N] [--benchmark-iters N]
+    \\metal_logits_v1 <metallib> [--fixture artifacts/.../fixture.bin] [--expect-topk] [--kernel scalar|threadgroup] [--kernel-repeats N] [--benchmark-iters N]
     \\
     \\Prototype-only CLI for the sidecar Metal LM-head logits projection.
     \\It does not run the transformer or replace infer_cpu_v1's default HF bridge.
@@ -74,11 +94,11 @@ pub fn main(init: std.process.Init) !void {
     if (opt.fixture_path) |path| {
         const fixture = try loadFixture(init.io, allocator, path);
         defer fixture.deinit(allocator);
-        try runCase(stdout, allocator, metallib_path_z, "checkpoint_f32_logits_matmul", fixture, opt.expect_topk, opt.kernel_repeats, opt.benchmark_iters);
+        try runCase(stdout, allocator, metallib_path_z, "checkpoint_f32_logits_matmul", fixture, opt.expect_topk, opt.kernel_repeats, opt.benchmark_iters, opt.kernel);
     } else {
         const fixture = try makeTinyFixture(allocator);
         defer fixture.deinit(allocator);
-        try runCase(stdout, allocator, metallib_path_z, "tiny_f32_logits_matmul", fixture, opt.expect_topk, opt.kernel_repeats, opt.benchmark_iters);
+        try runCase(stdout, allocator, metallib_path_z, "tiny_f32_logits_matmul", fixture, opt.expect_topk, opt.kernel_repeats, opt.benchmark_iters, opt.kernel);
     }
 }
 
@@ -96,6 +116,16 @@ fn parseOptions(args: []const []const u8) !Options {
             opt.fixture_path = args[i];
         } else if (std.mem.eql(u8, args[i], "--expect-topk")) {
             opt.expect_topk = true;
+        } else if (std.mem.eql(u8, args[i], "--kernel")) {
+            i += 1;
+            if (i >= args.len) return error.MissingKernel;
+            if (std.mem.eql(u8, args[i], "scalar")) {
+                opt.kernel = .scalar;
+            } else if (std.mem.eql(u8, args[i], "threadgroup")) {
+                opt.kernel = .threadgroup;
+            } else {
+                return error.InvalidKernel;
+            }
         } else if (std.mem.eql(u8, args[i], "--kernel-repeats")) {
             i += 1;
             if (i >= args.len) return error.MissingKernelRepeats;
@@ -195,7 +225,7 @@ fn readF32Slice(allocator: std.mem.Allocator, bytes: []const u8, offset: *usize,
     return out;
 }
 
-fn runCase(stdout: *Io.Writer, allocator: std.mem.Allocator, metallib_path_z: [:0]const u8, fixture_name: []const u8, fixture: Fixture, expect_topk: bool, kernel_repeats: u32, benchmark_iters: u32) !void {
+fn runCase(stdout: *Io.Writer, allocator: std.mem.Allocator, metallib_path_z: [:0]const u8, fixture_name: []const u8, fixture: Fixture, expect_topk: bool, kernel_repeats: u32, benchmark_iters: u32, kernel: Kernel) !void {
     const actual = try allocator.alloc(f32, fixture.rows);
     defer allocator.free(actual);
     @memset(actual, std.math.nan(f32));
@@ -208,6 +238,7 @@ fn runCase(stdout: *Io.Writer, allocator: std.mem.Allocator, metallib_path_z: [:
     const rc = if (benchmark_iters == 0)
         c.nn_metal_run_logits_matmul(
             metallib_path_z.ptr,
+            kernel.metalName().ptr,
             fixture.hidden.ptr,
             fixture.weights.ptr,
             actual.ptr,
@@ -222,6 +253,7 @@ fn runCase(stdout: *Io.Writer, allocator: std.mem.Allocator, metallib_path_z: [:
     else
         c.nn_metal_benchmark_logits_matmul_persistent(
             metallib_path_z.ptr,
+            kernel.metalName().ptr,
             fixture.hidden.ptr,
             fixture.weights.ptr,
             actual.ptr,
@@ -274,10 +306,11 @@ fn runCase(stdout: *Io.Writer, allocator: std.mem.Allocator, metallib_path_z: [:
         benchmark.elapsed_ms_per_kernel_repeat;
 
     try stdout.print(
-        "{{\"fixture\":\"{s}\",\"device\":\"{s}\",\"rows\":{d},\"cols\":{d},\"max_abs_diff\":{d},\"max_rel_diff\":{d},\"mismatches\":{d},\"tolerance_max_abs\":{d},\"tolerance_max_rel\":{d},\"expected_top1\":{d},\"actual_top1\":{d},\"top1_match\":{},\"top20_set_match\":{},\"kernel_repeats\":{d},\"elapsed_ms\":{d},\"elapsed_ms_per_repeat\":{d}",
+        "{{\"fixture\":\"{s}\",\"device\":\"{s}\",\"kernel\":\"{s}\",\"rows\":{d},\"cols\":{d},\"max_abs_diff\":{d},\"max_rel_diff\":{d},\"mismatches\":{d},\"tolerance_max_abs\":{d},\"tolerance_max_rel\":{d},\"expected_top1\":{d},\"actual_top1\":{d},\"top1_match\":{},\"top20_set_match\":{},\"kernel_repeats\":{d},\"elapsed_ms\":{d},\"elapsed_ms_per_repeat\":{d}",
         .{
             fixture_name,
             cString(&probe.device_name),
+            kernel.label(),
             fixture.rows,
             fixture.cols,
             diff.max_abs,

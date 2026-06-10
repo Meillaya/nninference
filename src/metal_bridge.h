@@ -48,6 +48,7 @@ int nn_metal_run_vector_add(
 
 int nn_metal_run_logits_matmul(
     const char *metallib_path,
+    const char *kernel_name,
     const float *hidden,
     const float *weights_row_major,
     float *logits_out,
@@ -62,6 +63,7 @@ int nn_metal_run_logits_matmul(
 
 int nn_metal_benchmark_logits_matmul_persistent(
     const char *metallib_path,
+    const char *kernel_name,
     const float *hidden,
     const float *weights_row_major,
     float *logits_out,
