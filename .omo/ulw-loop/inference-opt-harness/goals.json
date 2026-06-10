@@ -1,7 +1,7 @@
 {
   "version": 1,
   "createdAt": "2026-06-10T22:35:20.705Z",
-  "updatedAt": "2026-06-10T22:50:52.311Z",
+  "updatedAt": "2026-06-10T23:06:21.321Z",
   "briefPath": ".omo/ulw-loop/inference-opt-harness/brief.md",
   "goalsPath": ".omo/ulw-loop/inference-opt-harness/goals.json",
   "ledgerPath": ".omo/ulw-loop/inference-opt-harness/ledger.jsonl",
@@ -18,18 +18,18 @@
           "scenario": "happy path for: Harness CLI and state: `uv run python scripts/autoptimize.py --budget 3h --ru...",
           "userModel": "happy",
           "expectedEvidence": "Replace via revise_criterion with observable happy-path proof for goal 1.",
-          "capturedEvidence": "RED `.omo/ulw-loop/evidence/red-dryrun.txt`; GREEN `.omo/ulw-loop/evidence/green-unittest.txt`; tmux `.omo/ulw-loop/evidence/harness-dry-run-tmux.txt` PASS harness-dry-run-artifacts; cleanup receipt in transcript; final `.omo/ulw-loop/evidence/final-verification.txt`.",
+          "capturedEvidence": "Blocker closure evidence: RED .omo/ulw-loop/evidence/red-lifecycle-chart-tests.txt; tmux .omo/ulw-loop/evidence/lifecycle-events-tmux.txt shows queued->baseline->experiment->verify->checkpoint->complete and rollback path; final .omo/ulw-loop/evidence/final-verification-after-lifecycle-chart-fixes.txt; cleanup receipts present.",
           "status": "pass",
-          "capturedAt": "2026-06-10T22:50:51.403Z"
+          "capturedAt": "2026-06-10T23:06:21.173Z"
         },
         {
           "id": "C002",
           "scenario": "edge case (boundary/empty/malformed)",
           "userModel": "edge",
           "expectedEvidence": "Replace via revise_criterion with boundary or malformed-input proof for: Harness CLI and state: `uv run python scripts/autoptimize.py --budget 3h --ru....",
-          "capturedEvidence": "RED `.omo/ulw-loop/evidence/red-dryrun.txt`; GREEN `.omo/ulw-loop/evidence/green-unittest.txt`; tmux `.omo/ulw-loop/evidence/harness-dry-run-tmux.txt` PASS harness-dry-run-artifacts; cleanup receipt in transcript; final `.omo/ulw-loop/evidence/final-verification.txt`.",
+          "capturedEvidence": "Blocker closure evidence: RED .omo/ulw-loop/evidence/red-lifecycle-chart-tests.txt; tmux .omo/ulw-loop/evidence/lifecycle-events-tmux.txt shows queued->baseline->experiment->verify->checkpoint->complete and rollback path; final .omo/ulw-loop/evidence/final-verification-after-lifecycle-chart-fixes.txt; cleanup receipts present.",
           "status": "pass",
-          "capturedAt": "2026-06-10T22:50:51.431Z"
+          "capturedAt": "2026-06-10T23:06:21.203Z"
         },
         {
           "id": "C003",
@@ -43,7 +43,7 @@
       ],
       "attempt": 0,
       "createdAt": "2026-06-10T22:35:20.705Z",
-      "updatedAt": "2026-06-10T22:50:51.458Z"
+      "updatedAt": "2026-06-10T23:06:21.203Z"
     },
     {
       "id": "G002-lm-studio-comparator-unavailable-pat",
@@ -94,9 +94,9 @@
           "scenario": "happy path for: Report claim boundaries: generated reports label current local metrics as HF...",
           "userModel": "happy",
           "expectedEvidence": "Replace via revise_criterion with observable happy-path proof for goal 3.",
-          "capturedEvidence": "RED `.omo/ulw-loop/evidence/red-correctness.txt`; GREEN `.omo/ulw-loop/evidence/green-unittest.txt`; tmux `.omo/ulw-loop/evidence/report-boundary-tmux.txt` PASS report-claim-boundaries; cleanup receipt in transcript; report avoids unqualified LM Studio speed claim.",
+          "capturedEvidence": "Blocker closure evidence: RED .omo/ulw-loop/evidence/red-lifecycle-chart-tests.txt; tmux .omo/ulw-loop/evidence/chart-sections-tmux.txt shows all six required chart labels in report.md/charts.svg/report.html; final .omo/ulw-loop/evidence/final-verification-after-lifecycle-chart-fixes.txt; cleanup receipts present.",
           "status": "pass",
-          "capturedAt": "2026-06-10T22:50:51.572Z"
+          "capturedAt": "2026-06-10T23:06:21.232Z"
         },
         {
           "id": "C002",
@@ -119,7 +119,7 @@
       ],
       "attempt": 0,
       "createdAt": "2026-06-10T22:35:20.705Z",
-      "updatedAt": "2026-06-10T22:50:51.626Z"
+      "updatedAt": "2026-06-10T23:06:21.232Z"
     },
     {
       "id": "G004-regression-gates-existing-alignment",
@@ -246,9 +246,9 @@
           "scenario": "happy path for: Test-first for production changes; capture RED and GREEN outputs.",
           "userModel": "happy",
           "expectedEvidence": "Replace via revise_criterion with observable happy-path proof for goal 7.",
-          "capturedEvidence": "TDD evidence captured before implementation in `.omo/ulw-loop/evidence/red-*.txt`; GREEN evidence `.omo/ulw-loop/evidence/green-unittest.txt` and named green files.",
+          "capturedEvidence": "TDD and final verification evidence: RED .omo/ulw-loop/evidence/red-lifecycle-chart-tests.txt failed before implementation; uv unittest discover 14 tests OK; py_compile, dry-run lifecycle/chart assertions, correctness custom command, zig build, and HF alignment all pass in .omo/ulw-loop/evidence/final-verification-after-lifecycle-chart-fixes.txt.",
           "status": "pass",
-          "capturedAt": "2026-06-10T22:50:51.911Z"
+          "capturedAt": "2026-06-10T23:06:21.291Z"
         },
         {
           "id": "C002",
@@ -271,7 +271,7 @@
       ],
       "attempt": 0,
       "createdAt": "2026-06-10T22:35:20.705Z",
-      "updatedAt": "2026-06-10T22:50:51.969Z"
+      "updatedAt": "2026-06-10T23:06:21.291Z"
     },
     {
       "id": "G008-keep-changes-small-reversible",
@@ -360,9 +360,9 @@
           "scenario": "happy path for: Preserve claim boundaries from the approved plan.",
           "userModel": "happy",
           "expectedEvidence": "Replace via revise_criterion with observable happy-path proof for goal 10.",
-          "capturedEvidence": "Claim boundaries in report JSON/Markdown; evidence `.omo/ulw-loop/evidence/report-boundary-tmux.txt`, `scripts/autoptimize_report.py`, and final report artifacts.",
+          "capturedEvidence": "Blocker closure evidence: RED .omo/ulw-loop/evidence/red-lifecycle-chart-tests.txt; tmux .omo/ulw-loop/evidence/chart-sections-tmux.txt shows all six required chart labels in report.md/charts.svg/report.html; final .omo/ulw-loop/evidence/final-verification-after-lifecycle-chart-fixes.txt; cleanup receipts present.",
           "status": "pass",
-          "capturedAt": "2026-06-10T22:50:52.174Z"
+          "capturedAt": "2026-06-10T23:06:21.261Z"
         },
         {
           "id": "C002",
@@ -385,7 +385,7 @@
       ],
       "attempt": 0,
       "createdAt": "2026-06-10T22:35:20.705Z",
-      "updatedAt": "2026-06-10T22:50:52.229Z"
+      "updatedAt": "2026-06-10T23:06:21.261Z"
     },
     {
       "id": "G011-run-final-review-gate-before-complet",
@@ -398,9 +398,9 @@
           "scenario": "happy path for: Run final review gate before completion.",
           "userModel": "happy",
           "expectedEvidence": "Replace via revise_criterion with observable happy-path proof for goal 11.",
-          "capturedEvidence": "Final reviewer spawned as Verifier; final verification evidence `.omo/ulw-loop/evidence/final-verification.txt`; reviewer verdict pending at record time.",
+          "capturedEvidence": "TDD and final verification evidence: RED .omo/ulw-loop/evidence/red-lifecycle-chart-tests.txt failed before implementation; uv unittest discover 14 tests OK; py_compile, dry-run lifecycle/chart assertions, correctness custom command, zig build, and HF alignment all pass in .omo/ulw-loop/evidence/final-verification-after-lifecycle-chart-fixes.txt.",
           "status": "pass",
-          "capturedAt": "2026-06-10T22:50:52.257Z"
+          "capturedAt": "2026-06-10T23:06:21.321Z"
         },
         {
           "id": "C002",
@@ -423,7 +423,7 @@
       ],
       "attempt": 0,
       "createdAt": "2026-06-10T22:35:20.705Z",
-      "updatedAt": "2026-06-10T22:50:52.311Z"
+      "updatedAt": "2026-06-10T23:06:21.321Z"
     }
   ],
   "codexObjective": "Complete the durable ulw-loop plan in .omo/ulw-loop/inference-opt-harness/goals.json, including later accepted/appended stories, under the original brief constraints; use .omo/ulw-loop/inference-opt-harness/ledger.jsonl as the audit trail."

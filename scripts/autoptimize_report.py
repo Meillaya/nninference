@@ -35,6 +35,14 @@ class BenchmarkRow(TypedDict):
 
 
 ReportJson = dict[str, Any]
+REQUIRED_CHARTS: tuple[str, ...] = (
+    "Throughput over time",
+    "Latency distribution",
+    "TTFT",
+    "Speedup waterfall",
+    "Correctness pass/fail timeline",
+    "Promotion/rollback timeline",
+)
 
 
 def planned_correctness_commands(commands: list[str] | None = None) -> list[PlannedCommand]:
@@ -86,6 +94,7 @@ def _markdown(report: ReportJson) -> str:
     commands = "\n".join(f"- `{item['command']}`" for item in report["correctness"]["planned_commands"])
     results = "\n".join(f"- `{item['command']}` exit={item['exit_code']}" for item in report["correctness"].get("results", [])) or "- Not executed in dry-run mode."
     gaps = "\n".join(f"- {gap}" for gap in report["known_gaps"])
+    charts = "\n\n".join(f"### {chart}\n\nDry-run placeholder; promote only after measured samples are attached." for chart in REQUIRED_CHARTS)
     lmstudio = report["comparators"]["lmstudio"]
     return f"""# Autonomous optimization run {report['run_id']}
 
@@ -143,6 +152,8 @@ Reason: {lmstudio['reason']}
 
 See `charts.svg` for scoped dry-run chart placeholders.
 
+{charts}
+
 ## Benchmark scopes
 
 - HF bridge
@@ -166,7 +177,18 @@ def _svg(report: ReportJson) -> str:
         f'<rect x="250" y="{54 + index * 36}" width="{180 + index * 50}" height="22" fill="#2563eb" />'
         for index, label in enumerate(labels)
     )
-    return f'<svg xmlns="http://www.w3.org/2000/svg" width="720" height="220"><text x="40" y="32" font-size="22">Optimization scopes</text>{bars}</svg>\n'
+    chart_labels = "".join(
+        f'<text x="40" y="{205 + index * 28}" font-size="14">{html.escape(chart)}</text>'
+        for index, chart in enumerate(REQUIRED_CHARTS)
+    )
+    return (
+        '<svg xmlns="http://www.w3.org/2000/svg" width="760" height="400">'
+        '<text x="40" y="32" font-size="22">Optimization scopes</text>'
+        f"{bars}"
+        '<text x="40" y="180" font-size="18">Required report charts</text>'
+        f"{chart_labels}"
+        "</svg>\n"
+    )
 
 
 def _html(report: ReportJson) -> str:

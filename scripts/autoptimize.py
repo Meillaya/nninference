@@ -9,13 +9,18 @@ import argparse
 import json
 import platform
 import subprocess
+import sys
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
-from autoptimize_lmstudio import detect_lmstudio
-from autoptimize_report import ReportJson, benchmark_scope_rows, planned_correctness_commands, write_reports
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from scripts.autoptimize_lmstudio import detect_lmstudio
+from scripts.autoptimize_report import ReportJson, benchmark_scope_rows, planned_correctness_commands, write_reports
 
 BUDGET_SECONDS: Final[dict[str, int]] = {
     "3h": 10_800,
@@ -124,13 +129,24 @@ def write_run(config: HarnessConfig) -> ReportJson:
     if not config.resume:
         events_path.write_text("")
     _append_event(events_path, {"event": "queued", "run_id": config.run_id, "budget": config.budget})
+    _append_event(events_path, {"event": "baseline", "scope": "schema_placeholder", "status": "captured"})
+    _append_event(events_path, {"event": "experiment", "mode": "dry_run" if config.dry_run else "correctness_only"})
     correctness_results = _run_correctness(config) if config.correctness_only and not config.dry_run else []
     rollbacks = []
+    failed_correctness = any(result["exit_code"] != 0 for result in correctness_results)
+    _append_event(
+        events_path,
+        {
+            "event": "verify",
+            "status": "fail" if failed_correctness else "pass",
+            "correctness_results": len(correctness_results),
+        },
+    )
     if config.simulate_failed_experiment:
         rollbacks.append({"experiment_id": "simulated", "reason": "simulated_failed_experiment"})
         _append_event(events_path, {"event": "rollback", "reason": "simulated_failed_experiment"})
-    _append_event(events_path, {"event": "complete", "run_id": config.run_id})
     _append_event(events_path, {"event": "checkpoint", "run_id": config.run_id})
+    _append_event(events_path, {"event": "failed" if failed_correctness else "complete", "run_id": config.run_id})
     checkpoint_dir = run_dir / "checkpoints"
     checkpoint_dir.mkdir(exist_ok=True)
     _write_json(checkpoint_dir / "last_green.json", {"run_id": config.run_id, "status": "checkpoint"})
@@ -167,12 +183,12 @@ def _run_correctness(config: HarnessConfig) -> list[dict[str, str | int | float]
     return results
 
 
-def _append_event(path: Path, event: dict[str, str]) -> None:
+def _append_event(path: Path, event: dict[str, str | int]) -> None:
     with path.open("a") as handle:
         handle.write(json.dumps({"timestamp_unix": time.time(), **event}) + "\n")
 
 
-def _write_json(path: Path, data: dict[str, object]) -> None:
+def _write_json(path: Path, data: Mapping[str, object]) -> None:
     path.write_text(json.dumps(data, indent=2) + "\n")
 
 

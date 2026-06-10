@@ -1,0 +1,61 @@
+2026-06-10T23:02:21Z
+FFF
+======================================================================
+FAIL: test_failed_experiment_records_rollback_before_checkpoint (tests.test_autoptimize_lifecycle_report.TestLifecycleEvents.test_failed_experiment_records_rollback_before_checkpoint)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/mei/Projects/nninference/tests/test_autoptimize_lifecycle_report.py", line 65, in test_failed_experiment_records_rollback_before_checkpoint
+    self.assertEqual(events, ["queued", "baseline", "experiment", "verify", "rollback", "checkpoint", "complete"])
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: Lists differ: ['queued', 'rollback', 'complete', 'checkpoint'] != ['queued', 'baseline', 'experiment', 'verify', 'rollb[26 chars]ete']
+
+First differing element 1:
+'rollback'
+'baseline'
+
+Second list contains 3 additional elements.
+First extra element 4:
+'rollback'
+
+- ['queued', 'rollback', 'complete', 'checkpoint']
++ ['queued',
++  'baseline',
++  'experiment',
++  'verify',
++  'rollback',
++  'checkpoint',
++  'complete']
+
+======================================================================
+FAIL: test_run_events_record_required_lifecycle_in_order (tests.test_autoptimize_lifecycle_report.TestLifecycleEvents.test_run_events_record_required_lifecycle_in_order)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/mei/Projects/nninference/tests/test_autoptimize_lifecycle_report.py", line 46, in test_run_events_record_required_lifecycle_in_order
+    self.assertEqual(events, ["queued", "baseline", "experiment", "verify", "checkpoint", "complete"])
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: Lists differ: ['queued', 'complete', 'checkpoint'] != ['queued', 'baseline', 'experiment', 'verify', 'checkpoint', 'complete']
+
+First differing element 1:
+'complete'
+'baseline'
+
+Second list contains 3 additional elements.
+First extra element 3:
+'verify'
+
+- ['queued', 'complete', 'checkpoint']
++ ['queued', 'baseline', 'experiment', 'verify', 'checkpoint', 'complete']
+
+======================================================================
+FAIL: test_report_artifacts_name_every_required_chart (tests.test_autoptimize_lifecycle_report.TestRequiredChartSections.test_report_artifacts_name_every_required_chart)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/mei/Projects/nninference/tests/test_autoptimize_lifecycle_report.py", line 81, in test_report_artifacts_name_every_required_chart
+    self.assertIn(chart, report_md)
+    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+AssertionError: 'Throughput over time' not found in '# Autonomous optimization run charts\n\n## Executive summary\n\nDry-run harness artifacts were generated for budget `3h` (10800 seconds). This report is a production harness scaffold, not a performance win claim.\n\n## What was optimized\n\nThe current milestone optimized harness orchestration and evidence capture, not model math.\n\n## Claim boundaries\n\n- Current local CPU metrics are **HF bridge** scoped.\n- Current Metal metrics are **Metal LM-head sidecar** scoped.\n- This is **not full native transformer** inference until a future gate proves that surface.\n- LM Studio comparisons require local measurement metadata before any ranking claim.\n\n## Hardware/software/model environment\n\nMachine: `macOS-26.5-arm64-arm-64bit-Mach-O`. Model scope: `HF bridge plus Metal LM-head sidecar`.\n\n## Baseline metrics\n\nNo baseline benchmark is promoted by this dry-run. Benchmark rows are schema placeholders with explicit scopes.\n\n## Optimization timeline\n\nEvents are recorded in `events.jsonl`; lifecycle state includes queued, baseline, experiment, verify, checkpoint, rollback, and complete semantics.\n\n## Promoted changes\n\n[]\n\n## Rejected/rolled-back changes and reasons\n\n[]\n\n## Correctness evidence\n\nPlanned gate commands:\n\n- `uv run python scripts/run_alignment_tests.py`\n- `zig build`\n\nExecuted gate results:\n\n- Not executed in dry-run mode.\n\n## LM Studio comparison\n\nStatus: `skipped_with_reason`  \nReason: lms CLI not found on PATH; LM Studio comparison skipped\n\n## Charts\n\nSee `charts.svg` for scoped dry-run chart placeholders.\n\n## Benchmark scopes\n\n- HF bridge\n- Metal LM-head sidecar\n- microbenchmark\n\n## Known gaps\n\n- No long-duration optimization loop has been run yet.\n- LM Studio live generation comparison is optional and skipped when unavailable.\n- Current metrics must remain scoped as HF bridge, Metal sidecar, or microbenchmark evidence.\n\n## Reproduction commands\n\n- `uv run python scripts/autoptimize.py --budget 3h --run-id charts --dry-run --output-dir artifacts/optimization`\n'
+
+----------------------------------------------------------------------
+Ran 3 tests in 0.163s
+
+FAILED (failures=3)

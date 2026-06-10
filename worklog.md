@@ -1427,3 +1427,34 @@
   - The harness now provides lifecycle scaffolding and a simulated rollback path, but real autonomous code-edit optimization experiments are still a future milestone.
   - LM Studio live token generation is not measured unless a local LM Studio server/model is available and a future run enables that adapter.
   - Long-duration `3h`/`6h`/`9h`/`12h` optimization passes were not run during this implementation milestone; only smoke/dry-run/focused correctness execution was run.
+
+## 2026-06-10 ULW loop — lifecycle and chart blocker closure
+- Second final-review pass rejected the previous harness commit on two binding blockers:
+  - Actual `events.jsonl` entries skipped `baseline`, `experiment`, and `verify`, so the state-machine list in config was not backed by executable lifecycle evidence.
+  - Report artifacts did not explicitly include the plan-required chart surfaces: throughput over time, latency distribution, TTFT, speedup waterfall, correctness pass/fail timeline, and promotion/rollback timeline.
+- Added RED tests before implementation:
+  - `.omo/ulw-loop/evidence/red-lifecycle-chart-tests.txt` captured failures for missing lifecycle events and missing chart labels.
+  - New test module `tests/test_autoptimize_lifecycle_report.py` asserts the normal lifecycle order `queued -> baseline -> experiment -> verify -> checkpoint -> complete`, the rollback order `queued -> baseline -> experiment -> verify -> rollback -> checkpoint -> complete`, and chart-label presence in Markdown, SVG, and HTML reports.
+- Implemented blocker fixes:
+  - `scripts/autoptimize.py` now writes executable lifecycle events for `baseline`, `experiment`, and `verify`, records rollback before checkpoint for simulated failed experiments, checkpoints before completion, and preserves direct script execution while using pyright-safe package imports.
+  - `scripts/autoptimize_report.py` now names all six required chart surfaces in `report.md`, `charts.svg`, and `report.html`; placeholders remain explicitly labeled until real measured samples are attached.
+  - Updated the resume regression test to reflect the full lifecycle: checkpoints are present and completion is the terminal event for successful smoke runs.
+- Manual QA evidence:
+  - `.omo/ulw-loop/evidence/lifecycle-events-tmux.txt` — tmux scenario ran normal and rollback dry-runs, asserted exact lifecycle sequences, and recorded cleanup receipt.
+  - `.omo/ulw-loop/evidence/chart-sections-tmux.txt` — tmux scenario generated report artifacts and asserted all six required chart labels in Markdown/SVG/HTML with cleanup receipt.
+- Full verification evidence:
+  - `.omo/ulw-loop/evidence/final-verification-after-lifecycle-chart-fixes.txt`
+  - `python3 -m py_compile scripts/autoptimize.py scripts/autoptimize_report.py scripts/autoptimize_lmstudio.py tests/test_autoptimize.py tests/test_autoptimize_lifecycle_report.py`
+  - `uv run python -m unittest discover -s tests -p 'test_*.py'` — 14 tests OK.
+  - `uv run python scripts/autoptimize.py --budget 3h --run-id final-lifecycle-chart --dry-run --output-dir artifacts/optimization`
+  - Lifecycle assertion confirmed `['queued', 'baseline', 'experiment', 'verify', 'checkpoint', 'complete']`.
+  - Chart assertion confirmed no missing chart labels in `report.md`, `charts.svg`, or `report.html`.
+  - `uv run python scripts/autoptimize.py --budget 3h --run-id final-correctness-lifecycle-chart --correctness-only --command "python3 -c 'print(42)'" --output-dir artifacts/optimization`
+  - `zig build`
+  - `uv run python scripts/run_alignment_tests.py`
+  - Alignment remained exact for `Hi,`, `The capital of China is`, and `What is 1+1?` with max absolute logit diff `0.0`; sampling smoke stayed at `temperature=0.6`, `top_p=0.95`, `top_k=20`, candidate count `20`.
+  - `tmux` cleanup check reported no `ulw-qa-` leftovers.
+- Known gaps:
+  - The chart surfaces are now contractually present but still dry-run placeholders until a long optimization pass collects measured time series/distribution/waterfall data.
+  - LM Studio remains an optional local comparator; no live LM Studio generation benchmark was run in this blocker-closure pass.
+  - The harness is production-grade for auditable smoke/correctness lifecycle execution, but real autonomous optimization edits over 3h/6h/9h/12h budgets are a future execution milestone.

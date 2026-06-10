@@ -169,7 +169,9 @@ class TestLifecycleContracts(AutoptimizeCliTestCase):
             self.assert_success(second)
             events = (out_dir / "resume" / "events.jsonl").read_text().splitlines()
             self.assertGreaterEqual(len(events), 2)
-            self.assertEqual(json.loads(events[-1])["event"], "checkpoint")
+            names = [json.loads(event)["event"] for event in events]
+            self.assertGreaterEqual(names.count("checkpoint"), 2)
+            self.assertEqual(names[-1], "complete")
 
     def test_failed_experiment_can_record_rollback(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

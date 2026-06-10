@@ -1,0 +1,25 @@
+{
+  "run_id": "chart-qa",
+  "run_dir": "artifacts/optimization/chart-qa",
+  "status": "pass"
+}
+report.md contains 6 of 6 required chart labels
+charts.svg contains 6 of 6 required chart labels
+report.html contains 6 of 6 required chart labels
+PASS all required chart labels are present in MD, SVG, and HTML
+READY_FOR_CAPTURE
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+cleanup: tmux kill-session ulw-qa-chart-sections; confirmed no session remains
