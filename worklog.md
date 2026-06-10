@@ -482,3 +482,26 @@
 - HF bridge alignment remained intact for all three required prompts with max absolute logit diff `0.0`; sampling smoke remained `temperature=0.6`, `top_p=0.95`, `top_k=20`, candidate count `20`, selected token `353`.
 - Decision: keep repeated persistent samples as opt-in measurement infrastructure. Do not change defaults or promote kernels based on this validation-sized run.
 - Next optimization target: use the improved matrix sampling to run a higher-confidence focused comparison, then decide whether a small integration convenience (for example auto diagnostics in matrix via explicit `--kernels auto`) is worthwhile without changing defaults.
+
+## 2026-06-10 Resumed ultragoal G064 — sampled focused Metal logits matrix
+- Ran the G063 multi-sample matrix path as an evidence-only milestone before any further implementation or default decision.
+- Command:
+  - `uv run python scripts/benchmark_metal_logits_matrix.py --no-build --warmup 1 --repeats 5 --cpu-repeats 1 --kernel-repeats 5 --persistent-iters 5 --persistent-samples 5 --kernels scalar,threadgroup --buffer-modes nocopy --out artifacts/benchmarks/g064_sampled_focus/matrix_r5_p5_s5.json --artifact-dir artifacts/benchmarks/g064_sampled_focus/runs`
+- Matrix verdict: `pass`; ranking confidence remains `low` because this was a focused sampled run below the existing medium-confidence threshold (`repeats >= 7` and `persistent_iters >= 10`).
+- Correctness evidence:
+  - `scalar/nocopy` and `threadgroup/nocopy` rows both passed top-1/top-20 checks with `mismatches=0` and `actual_used_no_copy_all=true`.
+  - `scalar/nocopy` actual kernels seen: `["scalar"]`.
+  - `threadgroup/nocopy` actual kernels seen: `["threadgroup"]`.
+- One-shot measured-total evidence:
+  - `scalar/nocopy` median measured total: `546.638 ms`.
+  - `threadgroup/nocopy` median measured total: `568.926 ms`.
+  - Interaction delta: threadgroup was `+22.288 ms` (`+4.08%`) slower on measured total in this run, likely reflecting remaining host/fixture noise rather than pure kernel math.
+- Repeated persistent kernel evidence:
+  - `scalar/nocopy` persistent per-kernel-repeat median across 5 samples: `16.145 ms` (min `13.904 ms`, max `16.578 ms`).
+  - `threadgroup/nocopy` persistent per-kernel-repeat median across 5 samples: `13.027 ms` (min `12.622 ms`, max `14.120 ms`).
+  - Interaction delta: threadgroup was `-3.118 ms` (`-19.31%`) faster on persistent per-kernel-repeat.
+- Interpretation:
+  - The sampled persistent metric strengthens evidence that the threadgroup kernel improves kernel-loop math on Apple M4.
+  - The one-shot measured-total metric remains dominated by fixture/host/process noise and does not support default promotion by itself.
+  - No defaults changed. `scalar` + `copy` remains the default; `threadgroup`, `nocopy`, and `auto` remain explicit/diagnostic paths.
+- Next optimization target: add an explicit matrix option for `auto` diagnostics or isolate fixture/host timing further, but only if it improves decision quality without affecting default inference behavior.
