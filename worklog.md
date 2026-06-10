@@ -1487,3 +1487,19 @@
 - Claim boundary:
   - This is a local LM Studio live endpoint measurement only. It is not directly comparable to repo HF bridge or Metal sidecar numbers without matched prompt formatting, chat template, generation length, and sampling settings.
   - The third prompt hit the `max_tokens=64` cap, so its latency/token rate is a capped-generation measurement, not a natural stop measurement.
+
+## 2026-06-10 Follow-up — 3h optimization loop runner
+- Goal: user requested a real `3h` optimization run. A probe of `uv run python scripts/autoptimize.py --budget 3h --run-id probe-3h-nondry --output-dir artifacts/optimization` showed the existing non-dry-run path completed immediately after writing lifecycle scaffolding, so it would not satisfy a real 3h run.
+- Added `scripts/autoptimize_loop.py`, a small stdlib-only long-running loop runner that:
+  - enforces budget presets `3h`, `6h`, `9h`, and `12h`;
+  - writes `config.json`, `manifest.json`, `events.jsonl`, per-iteration `commands.json`, `checkpoints/last_green.json`, and summary reports;
+  - repeatedly runs benchmark/correctness command passes until the deadline or test-only `--max-iterations` cap;
+  - records `queued`, `baseline`, `experiment`, `command`, `verify`, `checkpoint`, `heartbeat`, `rollback`, `complete`, and `failed` events;
+  - rolls back/fails immediately on a command failure instead of claiming progress.
+- Added `tests/test_autoptimize_loop.py` with RED evidence in `.omo/ulw-loop/evidence/red-autoptimize-loop.txt` before implementation.
+- Verification before launching the real 3h run:
+  - `python3 -m py_compile scripts/autoptimize_loop.py tests/test_autoptimize_loop.py`
+  - `uv run python -m unittest tests.test_autoptimize_loop` — 2 tests OK.
+  - `uv run python -m unittest discover -s tests -p 'test_*.py'` — 16 tests OK.
+  - Pure LOC: `scripts/autoptimize_loop.py` 180, `tests/test_autoptimize_loop.py` 75.
+- Next action: launch the 3h run in tmux so it continues independently and records artifacts under `artifacts/optimization/<run-id>/`.
