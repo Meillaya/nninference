@@ -28,3 +28,16 @@
   - `What is 1+1?`: mean 5.696s/token, min 4.722s, max 6.670s, mean first-token rate 0.176 tok/s over 2 measured repeats.
 - Benchmark artifact written to ignored local path `artifacts/benchmarks/bridge_baseline.json`; summary is preserved here because `artifacts/` remains git-ignored.
 - Known limitation preserved: this baseline is the HF Python bridge path, not native Zig or Metal inference.
+
+## 2026-06-10 Ultragoal Gate 1 — Metal capability spike
+- Added a minimal Zig-callable Objective-C Metal bridge (`src/metal_bridge.h`, `src/metal_bridge.m`) plus a standalone Zig smoke executable (`src/metal_smoke.zig`) so Metal runtime work stays isolated from the HF-bridge inference path.
+- Added `metal/vector_add.metal` and `zig build metal-lib` / `zig build metal-smoke` build steps that compile the `.metal` source through `xcrun metal` + `xcrun metallib` into a Zig build-cache `kernels.metallib` path before running the smoke test.
+- Metal smoke evidence: device `Apple M4`, recommended max working set `12713115648` bytes, max threads per threadgroup `1024`, non-uniform dispatch available, vector length `1024`, mismatches `0`, max absolute error `0.0`; latest local artifact is `artifacts/metal/gate1_vector_add_smoke.json`.
+- Verification commands run:
+  - `zig fmt build.zig src/main.zig src/metal_smoke.zig`
+  - `zig build metal-smoke`
+  - `zig build`
+  - `uv run python scripts/run_alignment_tests.py`
+  - `mkdir -p artifacts/metal && zig build metal-smoke | tee artifacts/metal/gate1_vector_add_smoke.json`
+- HF-bridge alignment remained intact for the required prompts with max absolute logit diff `0.0`, greedy IDs matching HF forward argmax/generate, and default sampling smoke still reporting temperature `0.6`, top_p `0.95`, top_k `20`.
+- Known limitation: Gate 1 only proves host/shader/build/runtime capability with a vector-add fixture; it does not yet compute LM-head logits or move Qwen tensors through Metal.
