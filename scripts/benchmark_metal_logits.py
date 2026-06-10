@@ -27,6 +27,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--cpu-repeats", type=int, default=2)
     parser.add_argument("--kernel", choices=["scalar", "threadgroup"], default="scalar")
+    parser.add_argument("--buffer-mode", choices=["copy", "nocopy"], default="copy")
     parser.add_argument("--kernel-repeats", type=int, default=5)
     parser.add_argument(
         "--persistent-iters",
@@ -81,6 +82,8 @@ def run_metal(args: argparse.Namespace) -> tuple[list[float], list[float], list[
         "--expect-topk",
         "--kernel",
         args.kernel,
+        "--buffer-mode",
+        args.buffer_mode,
         "--kernel-repeats",
         str(args.kernel_repeats),
     ]
@@ -112,6 +115,8 @@ def run_persistent_metal(args: argparse.Namespace) -> tuple[float, dict] | None:
         "--expect-topk",
         "--kernel",
         args.kernel,
+        "--buffer-mode",
+        args.buffer_mode,
         "--kernel-repeats",
         str(args.kernel_repeats),
         "--benchmark-iters",
@@ -176,6 +181,7 @@ def main() -> None:
         "metal_cli": args.cli,
         "metallib": args.metallib,
         "kernel": args.kernel,
+        "buffer_mode": args.buffer_mode,
         "metal_wall_ms": summarize(metal_wall),
         "kernel_repeats_per_cli_run": args.kernel_repeats,
         "metal_command_buffer_total_ms": summarize(metal_kernel),

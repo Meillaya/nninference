@@ -263,3 +263,28 @@
   - `zig build -Dtarget=x86_64-linux --summary all`
   - `uv run python scripts/run_alignment_tests.py`
 - Remaining bottleneck: the CLI still reads hundreds of MiB of fixture data and copies weights into a shared Metal buffer once per process. A true live backend or memory-mapped/persistent process would be needed to remove that remaining cost.
+
+## 2026-06-10 Resumed ultragoal G057 — opt-in no-copy Metal buffers
+- Added an opt-in `--buffer-mode nocopy` path for `metal_logits_v1` and `scripts/benchmark_metal_logits.py`. The default remains `--buffer-mode copy`; the no-copy path attempts `newBufferWithBytesNoCopy` for hidden, row-major weights, and logits output, then falls back to the existing copy-backed shared buffers if Metal refuses any allocation.
+- Extended the Metal bridge result JSON with `buffer_mode` and `used_no_copy_buffers` so benchmark reports distinguish a requested no-copy experiment from an actual no-copy run.
+- Correctness remained green on the full-vocab Qwen LM-head fixture:
+  - Copy-backed scalar: top-1 `353`, top-20 set match `true`, `mismatches=0`.
+  - No-copy scalar: top-1 `353`, top-20 set match `true`, `mismatches=0`, `used_no_copy_buffers=true`.
+  - Final preservation check for no-copy scalar with `--kernel-repeats 2`: top-1 `353`, top-20 set match `true`, `mismatches=0`, `max_abs_diff=0.000011444092`.
+  - HF bridge alignment still passed for `"Hi,"`, `"The capital of China is"`, and `"What is 1+1?"` with max absolute logit diff `0.0` and sampling smoke defaults `temperature=0.6`, `top_p=0.95`, `top_k=20`.
+- Benchmark comparison with `--kernel scalar --kernel-repeats 5 --persistent-iters 3`:
+  - Copy-backed run (`artifacts/benchmarks/g057_copy.json`): wall mean `1117.524 ms`; command-buffer per-repeat mean `28.367 ms`; fixture load mean `389.891 ms`; bridge wall mean `356.288 ms`; measured total mean `769.560 ms`; persistent setup `124.786 ms`; persistent per-kernel-repeat `14.815 ms`.
+  - No-copy run (`artifacts/benchmarks/g057_nocopy.json`): wall mean `740.003 ms`; command-buffer per-repeat mean `14.191 ms`; fixture load mean `364.962 ms`; bridge wall mean `88.101 ms`; measured total mean `475.901 ms`; persistent setup `19.934 ms`; persistent per-kernel-repeat `12.806 ms`.
+- Interpretation: this is a real host-transfer/setup win for the prototype benchmark path. The no-copy mode removes the large shared-buffer input copy and final output copy when Metal accepts host-backed shared buffers, improving measured total by ~38.2% versus the copy-backed G057 sample and reducing bridge wall time by ~75.3%. It remains opt-in until a follow-on milestone validates whether it should become the default benchmark mode.
+- Verification commands run:
+  - `zig fmt src/metal_logits_test.zig`
+  - `zig build -Denable-metal=true`
+  - `./zig-out/bin/metal_logits_v1 zig-out/metal/kernels.metallib --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk --kernel scalar --buffer-mode copy --kernel-repeats 2`
+  - `./zig-out/bin/metal_logits_v1 zig-out/metal/kernels.metallib --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk --kernel scalar --buffer-mode nocopy --kernel-repeats 2`
+  - `uv run python scripts/benchmark_metal_logits.py --warmup 1 --repeats 2 --cpu-repeats 1 --kernel scalar --buffer-mode copy --kernel-repeats 5 --persistent-iters 3 --out artifacts/benchmarks/g057_copy.json`
+  - `uv run python scripts/benchmark_metal_logits.py --warmup 1 --repeats 2 --cpu-repeats 1 --kernel scalar --buffer-mode nocopy --kernel-repeats 5 --persistent-iters 3 --out artifacts/benchmarks/g057_nocopy.json`
+  - `zig build`
+  - `zig build -Dtarget=x86_64-linux --summary all`
+  - `./zig-out/bin/metal_logits_v1 zig-out/metal/kernels.metallib --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk --kernel scalar --buffer-mode nocopy --kernel-repeats 2`
+  - `uv run python scripts/run_alignment_tests.py`
+- Next optimization target: run a no-copy-first defaulting experiment or a higher-repeat scalar/threadgroup matrix before promoting any default behavior; keep copy-backed mode as the rollback path.

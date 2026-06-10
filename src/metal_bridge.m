@@ -184,6 +184,7 @@ int nn_metal_run_logits_matmul(
     uint32_t rows,
     uint32_t cols,
     uint32_t repeat_count,
+    uint8_t use_no_copy_buffers,
     NnMetalProbe *out_probe,
     NnMetalSmokeResult *out_result,
     char *err,
@@ -229,17 +230,32 @@ int nn_metal_run_logits_matmul(
         const NSUInteger hidden_bytes = (NSUInteger)cols * sizeof(float);
         const NSUInteger weight_bytes = (NSUInteger)rows * (NSUInteger)cols * sizeof(float);
         const NSUInteger logits_bytes = (NSUInteger)rows * sizeof(float);
-        id<MTLBuffer> hidden_buffer = [device newBufferWithLength:hidden_bytes options:MTLResourceStorageModeShared];
-        id<MTLBuffer> weights_buffer = [device newBufferWithLength:weight_bytes options:MTLResourceStorageModeShared];
-        id<MTLBuffer> logits_buffer = [device newBufferWithLength:logits_bytes options:MTLResourceStorageModeShared];
+        id<MTLBuffer> hidden_buffer = nil;
+        id<MTLBuffer> weights_buffer = nil;
+        id<MTLBuffer> logits_buffer = nil;
+        bool used_no_copy = false;
+        if (use_no_copy_buffers) {
+            memset(logits_out, 0, logits_bytes);
+            hidden_buffer = [device newBufferWithBytesNoCopy:(void *)hidden length:hidden_bytes options:MTLResourceStorageModeShared deallocator:nil];
+            weights_buffer = [device newBufferWithBytesNoCopy:(void *)weights_row_major length:weight_bytes options:MTLResourceStorageModeShared deallocator:nil];
+            logits_buffer = [device newBufferWithBytesNoCopy:(void *)logits_out length:logits_bytes options:MTLResourceStorageModeShared deallocator:nil];
+            used_no_copy = hidden_buffer != nil && weights_buffer != nil && logits_buffer != nil;
+        }
+        if (!used_no_copy) {
+            hidden_buffer = [device newBufferWithLength:hidden_bytes options:MTLResourceStorageModeShared];
+            weights_buffer = [device newBufferWithLength:weight_bytes options:MTLResourceStorageModeShared];
+            logits_buffer = [device newBufferWithLength:logits_bytes options:MTLResourceStorageModeShared];
+        }
         id<MTLBuffer> dims_buffer = [device newBufferWithLength:sizeof(uint32_t) * 2 options:MTLResourceStorageModeShared];
         if (hidden_buffer == nil || weights_buffer == nil || logits_buffer == nil || dims_buffer == nil) {
             nn_set_error(err, err_len, "failed to allocate shared Metal buffers");
             return 25;
         }
-        memcpy([hidden_buffer contents], hidden, hidden_bytes);
-        memcpy([weights_buffer contents], weights_row_major, weight_bytes);
-        memset([logits_buffer contents], 0, logits_bytes);
+        if (!used_no_copy) {
+            memcpy([hidden_buffer contents], hidden, hidden_bytes);
+            memcpy([weights_buffer contents], weights_row_major, weight_bytes);
+            memset([logits_buffer contents], 0, logits_bytes);
+        }
         uint32_t dims[2] = { rows, cols };
         memcpy([dims_buffer contents], dims, sizeof(dims));
 
@@ -290,11 +306,12 @@ int nn_metal_run_logits_matmul(
             return 27;
         }
 
-        memcpy(logits_out, [logits_buffer contents], logits_bytes);
+        if (!used_no_copy) memcpy(logits_out, [logits_buffer contents], logits_bytes);
         if (out_result != NULL) {
             memset(out_result, 0, sizeof(*out_result));
             out_result->n = rows;
             out_result->elapsed_ms = (end_time - start_time) * 1000.0;
+            out_result->used_no_copy_buffers = used_no_copy ? 1 : 0;
         }
         return 0;
     }
@@ -310,6 +327,7 @@ int nn_metal_benchmark_logits_matmul_persistent(
     uint32_t cols,
     uint32_t iterations,
     uint32_t repeat_count,
+    uint8_t use_no_copy_buffers,
     NnMetalProbe *out_probe,
     NnMetalSmokeResult *out_result,
     NnMetalBenchmarkResult *out_benchmark,
@@ -358,17 +376,32 @@ int nn_metal_benchmark_logits_matmul_persistent(
         const NSUInteger hidden_bytes = (NSUInteger)cols * sizeof(float);
         const NSUInteger weight_bytes = (NSUInteger)rows * (NSUInteger)cols * sizeof(float);
         const NSUInteger logits_bytes = (NSUInteger)rows * sizeof(float);
-        id<MTLBuffer> hidden_buffer = [device newBufferWithLength:hidden_bytes options:MTLResourceStorageModeShared];
-        id<MTLBuffer> weights_buffer = [device newBufferWithLength:weight_bytes options:MTLResourceStorageModeShared];
-        id<MTLBuffer> logits_buffer = [device newBufferWithLength:logits_bytes options:MTLResourceStorageModeShared];
+        id<MTLBuffer> hidden_buffer = nil;
+        id<MTLBuffer> weights_buffer = nil;
+        id<MTLBuffer> logits_buffer = nil;
+        bool used_no_copy = false;
+        if (use_no_copy_buffers) {
+            memset(logits_out, 0, logits_bytes);
+            hidden_buffer = [device newBufferWithBytesNoCopy:(void *)hidden length:hidden_bytes options:MTLResourceStorageModeShared deallocator:nil];
+            weights_buffer = [device newBufferWithBytesNoCopy:(void *)weights_row_major length:weight_bytes options:MTLResourceStorageModeShared deallocator:nil];
+            logits_buffer = [device newBufferWithBytesNoCopy:(void *)logits_out length:logits_bytes options:MTLResourceStorageModeShared deallocator:nil];
+            used_no_copy = hidden_buffer != nil && weights_buffer != nil && logits_buffer != nil;
+        }
+        if (!used_no_copy) {
+            hidden_buffer = [device newBufferWithLength:hidden_bytes options:MTLResourceStorageModeShared];
+            weights_buffer = [device newBufferWithLength:weight_bytes options:MTLResourceStorageModeShared];
+            logits_buffer = [device newBufferWithLength:logits_bytes options:MTLResourceStorageModeShared];
+        }
         id<MTLBuffer> dims_buffer = [device newBufferWithLength:sizeof(uint32_t) * 2 options:MTLResourceStorageModeShared];
         if (hidden_buffer == nil || weights_buffer == nil || logits_buffer == nil || dims_buffer == nil) {
             nn_set_error(err, err_len, "failed to allocate shared Metal buffers");
             return 35;
         }
-        memcpy([hidden_buffer contents], hidden, hidden_bytes);
-        memcpy([weights_buffer contents], weights_row_major, weight_bytes);
-        memset([logits_buffer contents], 0, logits_bytes);
+        if (!used_no_copy) {
+            memcpy([hidden_buffer contents], hidden, hidden_bytes);
+            memcpy([weights_buffer contents], weights_row_major, weight_bytes);
+            memset([logits_buffer contents], 0, logits_bytes);
+        }
         uint32_t dims[2] = { rows, cols };
         memcpy([dims_buffer contents], dims, sizeof(dims));
 
@@ -426,13 +459,14 @@ int nn_metal_benchmark_logits_matmul_persistent(
         }
         CFAbsoluteTime loop_end = CFAbsoluteTimeGetCurrent();
 
-        memcpy(logits_out, [logits_buffer contents], logits_bytes);
+        if (!used_no_copy) memcpy(logits_out, [logits_buffer contents], logits_bytes);
         const double setup_ms = (setup_end - setup_start) * 1000.0;
         const double elapsed_ms = (loop_end - loop_start) * 1000.0;
         if (out_result != NULL) {
             memset(out_result, 0, sizeof(*out_result));
             out_result->n = rows;
             out_result->elapsed_ms = elapsed_ms;
+            out_result->used_no_copy_buffers = used_no_copy ? 1 : 0;
         }
         if (out_benchmark != NULL) {
             memset(out_benchmark, 0, sizeof(*out_benchmark));

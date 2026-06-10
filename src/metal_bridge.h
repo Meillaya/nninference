@@ -20,6 +20,7 @@ typedef struct NnMetalSmokeResult {
     uint32_t mismatches;
     float max_abs_error;
     double elapsed_ms;
+    uint8_t used_no_copy_buffers;
 } NnMetalSmokeResult;
 
 typedef struct NnMetalBenchmarkResult {
@@ -55,6 +56,7 @@ int nn_metal_run_logits_matmul(
     uint32_t rows,
     uint32_t cols,
     uint32_t repeat_count,
+    uint8_t use_no_copy_buffers,
     NnMetalProbe *out_probe,
     NnMetalSmokeResult *out_result,
     char *err,
@@ -71,6 +73,7 @@ int nn_metal_benchmark_logits_matmul_persistent(
     uint32_t cols,
     uint32_t iterations,
     uint32_t repeat_count,
+    uint8_t use_no_copy_buffers,
     NnMetalProbe *out_probe,
     NnMetalSmokeResult *out_result,
     NnMetalBenchmarkResult *out_benchmark,
