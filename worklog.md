@@ -847,3 +847,15 @@
   - Code-reviewer subagent APPROVED the four-file diff and confirmed default command mode remains `per_iter`, explicit modes are emitted, no-copy/top-k/mismatch evidence is preserved, and wrapper batched output passes validation.
 - Decision: keep the opt-in batched command-buffer timing mode as a measurement probe. Do not treat it as a default promotion or as comparable to prior `per_iter` timings without the command-mode label.
 - Next optimization target: reduce duplication in the Objective-C bridge setup code or add a comparison report that explicitly separates `per_iter` and `batched` timing semantics before considering any benchmark default changes.
+
+## 2026-06-10 Resumed ultragoal G075 — cleanup plan for Metal benchmark setup duplication
+- Cleanup plan before edits:
+  1. Keep behavior locked with the G074 regression checks: direct per-iteration and batched NDJSON correctness, wrapper sampled validation, persistent matrix rollback/control, Metal smoke, full-vocab Metal logits top-k, and HF alignment.
+  2. Prefer deletion/reuse over new abstraction layers: extract only the repeated pieces needed by both persistent benchmark functions.
+  3. Preserve all public C ABI function names and default CLI behavior.
+  4. Preserve no-copy lifetime semantics, strict no-copy failure, actual-kernel reporting, command-mode reporting, and top-k/mismatch evidence.
+  5. If helper extraction becomes broad or risky, stop and document rollback rather than changing benchmark semantics.
+- Target duplication to reduce:
+  - repeated buffer allocation/copy/no-copy setup between `nn_metal_benchmark_logits_matmul_persistent` and `nn_metal_benchmark_logits_matmul_persistent_batched`;
+  - repeated threadgroup/grid sizing checks;
+  - avoid changing the dispatch loops themselves except to call helpers.
