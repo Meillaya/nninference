@@ -1346,3 +1346,26 @@
   - `python3 scripts/consolidate_benchmark_findings.py`
   - `python3 -m py_compile scripts/consolidate_benchmark_findings.py`
   - `git status --short --ignored` confirmed generated model/artifact/build/cache directories remain ignored.
+
+## 2026-06-10 Follow-up — Initialized hierarchical AGENTS knowledge base
+- Goal: run `$omo:init-deep` to turn the existing root-only task instructions into a concise hierarchical project knowledge base without changing runtime behavior.
+- Discovery process:
+  - Spawned parallel read-only explore agents for project structure, entry points, conventions, anti-patterns, build/CI, tests, large-file hotspots, and generated/model artifact boundaries.
+  - Ran local structure/config discovery with `find`, `rg`, `wc`, `git status`, `git ls-files`, and direct reads of the existing `AGENTS.md`, `build.zig`, `pyproject.toml`, and symbol surfaces.
+- Location decision:
+  - Updated root `AGENTS.md` because it is the repository-wide instruction surface and must preserve active task requirements.
+  - Added `src/AGENTS.md` because Zig CLI, Objective-C Metal bridge, Metal ABI, and JSON output contracts have distinct local rules.
+  - Added `scripts/AGENTS.md` because uv-run Python CLIs, HF bridge, alignment gates, benchmark wrappers, and artifact schema validation have distinct local rules.
+  - Did not add nested `AGENTS.md` for `artifacts/`, `Qwen3.5-0.8B/`, `docs/`, `metal/`, or empty `tests/`; root coverage plus `.gitignore` and worklog evidence are sufficient for now.
+- Content decisions:
+  - Preserved the active task requirements verbatim in the root file.
+  - Captured project-specific anti-patterns: uv-only dependency management, no overstated native-inference claims, no silent Metal default promotion, no row-major fixture reinterpretation, no hidden setup/top-k timing, no hand-edited evidence artifacts.
+  - Captured `src/` ABI rules for `metal_bridge.h` / `metal_bridge.m`, `metal_logits_v1` default stability, and schema-sensitive JSON fields.
+  - Captured `scripts/` rules for fail-fast wrapper validation, named benchmark artifacts, canonical alignment prompts, and uv-run execution.
+- Verification:
+  - `find . -name AGENTS.md -not -path './.git/*' -not -path './.venv/*' -not -path './.zig-cache/*' | sort`
+  - `wc -l AGENTS.md src/AGENTS.md scripts/AGENTS.md`
+  - `git diff --check`
+  - `git status --short`
+- Known gaps:
+  - No runtime Zig/Python alignment gates were rerun because this milestone only changed Markdown guidance and `worklog.md`.
