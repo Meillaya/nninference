@@ -38,6 +38,25 @@ pub fn build(b: *std.Build) void {
         .root_module = metal_mod,
     });
 
+    const metal_logits_mod = b.createModule(.{
+        .root_source_file = b.path("src/metal_logits_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    metal_logits_mod.addIncludePath(b.path("src"));
+    metal_logits_mod.addCSourceFile(.{
+        .file = b.path("src/metal_bridge.m"),
+        .flags = &.{"-fobjc-arc"},
+        .language = .objective_c,
+    });
+    metal_logits_mod.linkFramework("Foundation", .{});
+    metal_logits_mod.linkFramework("Metal", .{});
+
+    const metal_logits_test = b.addExecutable(.{
+        .name = "metal_logits_test",
+        .root_module = metal_logits_mod,
+    });
+
     const compile_metal = b.addSystemCommand(&.{
         "xcrun", "-sdk", "macosx", "metal", "-c",
     });
@@ -59,4 +78,10 @@ pub fn build(b: *std.Build) void {
     metal_smoke_run.addFileArg(metallib_file);
     const metal_smoke_step = b.step("metal-smoke", "Run the Metal vector-add capability smoke test");
     metal_smoke_step.dependOn(&metal_smoke_run.step);
+
+    const metal_logits_run = b.addRunArtifact(metal_logits_test);
+    metal_logits_run.addFileArg(metallib_file);
+    if (b.args) |args| metal_logits_run.addArgs(args);
+    const metal_logits_step = b.step("metal-logits-test", "Run the Metal f32 logits matmul test");
+    metal_logits_step.dependOn(&metal_logits_run.step);
 }

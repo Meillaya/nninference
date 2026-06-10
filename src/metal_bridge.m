@@ -165,3 +165,114 @@ int nn_metal_run_vector_add(
         return 0;
     }
 }
+
+int nn_metal_run_logits_matmul(
+    const char *metallib_path,
+    const float *hidden,
+    const float *weights_row_major,
+    float *logits_out,
+    uint32_t rows,
+    uint32_t cols,
+    NnMetalProbe *out_probe,
+    NnMetalSmokeResult *out_result,
+    char *err,
+    size_t err_len
+) {
+    @autoreleasepool {
+        nn_clear_error(err, err_len);
+        if (metallib_path == NULL || hidden == NULL || weights_row_major == NULL || logits_out == NULL || rows == 0 || cols == 0) {
+            nn_set_error(err, err_len, "invalid logits_matmul arguments");
+            return 20;
+        }
+
+        id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+        if (device == nil) {
+            nn_set_error(err, err_len, "MTLCreateSystemDefaultDevice returned nil");
+            return 21;
+        }
+
+        NSError *ns_error = nil;
+        NSString *library_path = [NSString stringWithUTF8String:metallib_path];
+        id<MTLLibrary> library = [device newLibraryWithFile:library_path error:&ns_error];
+        if (library == nil) {
+            nn_set_error(err, err_len, "newLibraryWithFile failed: %s", [[ns_error localizedDescription] UTF8String]);
+            return 22;
+        }
+
+        id<MTLFunction> function = [library newFunctionWithName:@"logits_matmul"];
+        if (function == nil) {
+            nn_set_error(err, err_len, "Metal function logits_matmul not found");
+            return 23;
+        }
+
+        id<MTLComputePipelineState> pipeline = [device newComputePipelineStateWithFunction:function error:&ns_error];
+        if (pipeline == nil) {
+            nn_set_error(err, err_len, "newComputePipelineStateWithFunction failed: %s", [[ns_error localizedDescription] UTF8String]);
+            return 24;
+        }
+        nn_fill_probe(device, pipeline, out_probe);
+
+        const NSUInteger hidden_bytes = (NSUInteger)cols * sizeof(float);
+        const NSUInteger weight_bytes = (NSUInteger)rows * (NSUInteger)cols * sizeof(float);
+        const NSUInteger logits_bytes = (NSUInteger)rows * sizeof(float);
+        id<MTLBuffer> hidden_buffer = [device newBufferWithLength:hidden_bytes options:MTLResourceStorageModeShared];
+        id<MTLBuffer> weights_buffer = [device newBufferWithLength:weight_bytes options:MTLResourceStorageModeShared];
+        id<MTLBuffer> logits_buffer = [device newBufferWithLength:logits_bytes options:MTLResourceStorageModeShared];
+        id<MTLBuffer> dims_buffer = [device newBufferWithLength:sizeof(uint32_t) * 2 options:MTLResourceStorageModeShared];
+        if (hidden_buffer == nil || weights_buffer == nil || logits_buffer == nil || dims_buffer == nil) {
+            nn_set_error(err, err_len, "failed to allocate shared Metal buffers");
+            return 25;
+        }
+        memcpy([hidden_buffer contents], hidden, hidden_bytes);
+        memcpy([weights_buffer contents], weights_row_major, weight_bytes);
+        memset([logits_buffer contents], 0, logits_bytes);
+        uint32_t dims[2] = { rows, cols };
+        memcpy([dims_buffer contents], dims, sizeof(dims));
+
+        id<MTLCommandQueue> queue = [device newCommandQueue];
+        id<MTLCommandBuffer> command_buffer = [queue commandBuffer];
+        id<MTLComputeCommandEncoder> encoder = [command_buffer computeCommandEncoder];
+        if (queue == nil || command_buffer == nil || encoder == nil) {
+            nn_set_error(err, err_len, "failed to create Metal command encoder");
+            return 26;
+        }
+
+        [encoder setComputePipelineState:pipeline];
+        [encoder setBuffer:hidden_buffer offset:0 atIndex:0];
+        [encoder setBuffer:weights_buffer offset:0 atIndex:1];
+        [encoder setBuffer:logits_buffer offset:0 atIndex:2];
+        [encoder setBuffer:dims_buffer offset:0 atIndex:3];
+
+        NSUInteger threads_per_group = [pipeline maxTotalThreadsPerThreadgroup];
+        if (threads_per_group > 256) threads_per_group = 256;
+        if (threads_per_group == 0) threads_per_group = 1;
+        if (threads_per_group > rows) threads_per_group = rows;
+        MTLSize threadgroup_size = MTLSizeMake(threads_per_group, 1, 1);
+        MTLSize grid_size = MTLSizeMake(rows, 1, 1);
+
+        CFAbsoluteTime start_time = CFAbsoluteTimeGetCurrent();
+        if ([encoder respondsToSelector:@selector(dispatchThreads:threadsPerThreadgroup:)]) {
+            [encoder dispatchThreads:grid_size threadsPerThreadgroup:threadgroup_size];
+        } else {
+            const NSUInteger group_count = ((NSUInteger)rows + threads_per_group - 1) / threads_per_group;
+            [encoder dispatchThreadgroups:MTLSizeMake(group_count, 1, 1) threadsPerThreadgroup:threadgroup_size];
+        }
+        [encoder endEncoding];
+        [command_buffer commit];
+        [command_buffer waitUntilCompleted];
+        CFAbsoluteTime end_time = CFAbsoluteTimeGetCurrent();
+
+        if ([command_buffer error] != nil) {
+            nn_set_error(err, err_len, "Metal command buffer failed: %s", [[command_buffer.error localizedDescription] UTF8String]);
+            return 27;
+        }
+
+        memcpy(logits_out, [logits_buffer contents], logits_bytes);
+        if (out_result != NULL) {
+            memset(out_result, 0, sizeof(*out_result));
+            out_result->n = rows;
+            out_result->elapsed_ms = (end_time - start_time) * 1000.0;
+        }
+        return 0;
+    }
+}

@@ -36,6 +36,20 @@ int nn_metal_run_vector_add(
     size_t err_len
 );
 
+
+int nn_metal_run_logits_matmul(
+    const char *metallib_path,
+    const float *hidden,
+    const float *weights_row_major,
+    float *logits_out,
+    uint32_t rows,
+    uint32_t cols,
+    NnMetalProbe *out_probe,
+    NnMetalSmokeResult *out_result,
+    char *err,
+    size_t err_len
+);
+
 #ifdef __cplusplus
 }
 #endif

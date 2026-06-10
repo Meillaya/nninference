@@ -41,3 +41,22 @@
   - `mkdir -p artifacts/metal && zig build metal-smoke | tee artifacts/metal/gate1_vector_add_smoke.json`
 - HF-bridge alignment remained intact for the required prompts with max absolute logit diff `0.0`, greedy IDs matching HF forward argmax/generate, and default sampling smoke still reporting temperature `0.6`, top_p `0.95`, top_k `20`.
 - Known limitation: Gate 1 only proves host/shader/build/runtime capability with a vector-add fixture; it does not yet compute LM-head logits or move Qwen tensors through Metal.
+
+## 2026-06-10 Ultragoal Gate 2 — independent golden logits matmul
+- Extended the sidecar Metal shader library with `logits_matmul`, computing final-token logits as `weights[row, col] * hidden[col]` reductions for f32 row-major weights.
+- Extended the C/Objective-C bridge with `nn_metal_run_logits_matmul` and added `src/metal_logits_test.zig`, a standalone test runner that keeps model integration out of `infer_cpu_v1`.
+- Tiny independent fixture: analytic HF-independent f32 data with shape `17 x 19`, CPU reference accumulated in f64 then cast to f32. Result: max_abs_diff `0.0`, max_rel_diff `0.0`, mismatches `0` under `1e-4`/`1e-4` tolerance.
+- Added `scripts/generate_checkpoint_logits_fixture.py` to create ignored checkpoint-slice fixtures under `artifacts/metal/gate2/checkpoint_hi/` from Qwen3.5 hidden state + tied embedding rows. The committed code records a JSON manifest and writes the binary tensor fixture only to ignored artifacts.
+- Checkpoint-derived fixture: prompt `Hi,`, 64 selected rows (guard rows, required greedy IDs, top-20 prompt rows, deterministic random fill) x hidden size `1024`. Result: max_abs_diff `0.000008583069`, max_rel_diff `0.000013547198`, mismatches `0` under `5e-3`/`5e-3` tolerance.
+- Verification commands run:
+  - `zig fmt build.zig src/metal_logits_test.zig src/metal_smoke.zig`
+  - `zig build metal-smoke`
+  - `zig build metal-logits-test`
+  - `uv run python scripts/generate_checkpoint_logits_fixture.py --model-dir Qwen3.5-0.8B --prompt 'Hi,' --out artifacts/metal/gate2/checkpoint_hi`
+  - `zig build metal-logits-test -- --fixture artifacts/metal/gate2/checkpoint_hi/fixture.bin`
+  - `zig build`
+  - `uv run python scripts/run_alignment_tests.py`
+  - `zig build metal-logits-test | tee artifacts/metal/gate2_tiny_logits_matmul.json`
+  - `zig build metal-logits-test -- --fixture artifacts/metal/gate2/checkpoint_hi/fixture.bin | tee artifacts/metal/gate2_checkpoint_hi_logits_matmul.json`
+- HF-bridge alignment remained intact for all three required prompts with max absolute logit diff `0.0`, greedy IDs matching HF forward argmax/generate, and default sampling still at temperature `0.6`, top_p `0.95`, top_k `20`.
+- Known limitation: Gate 2 validates row-slice checkpoint matmul only; full-vocab top-1/top-20 agreement is reserved for Gate 3.
