@@ -25,6 +25,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--out", default="artifacts/benchmarks/metal_logits_reuse.json")
     parser.add_argument("--kernels", default="scalar,threadgroup")
     parser.add_argument("--buffer-mode", choices=["copy", "nocopy"], default="nocopy")
+    parser.add_argument("--compare-mode", "--comparison-mode", choices=["full", "topk"], default="full")
     parser.add_argument("--kernel-repeats", type=int, default=5)
     parser.add_argument("--benchmark-iters", type=int, default=10)
     parser.add_argument("--benchmark-command-mode", choices=["per_iter", "batched"], default="per_iter")
@@ -114,6 +115,8 @@ def validate(args: argparse.Namespace, header: dict[str, Any], rows: list[dict[s
         reasons.append("header benchmark iters mismatch")
     if header.get("benchmark_command_mode") != args.benchmark_command_mode:
         reasons.append("header benchmark command mode mismatch")
+    if header.get("compare_mode", "full") != args.compare_mode:
+        reasons.append("header compare mode mismatch")
     if float(header.get("shared_fixture_load_ms", -1.0)) <= 0.0:
         reasons.append("shared fixture load time was not positive")
     for row in rows:
@@ -130,12 +133,20 @@ def validate(args: argparse.Namespace, header: dict[str, Any], rows: list[dict[s
             reasons.append(f"{kernel}: no-copy evidence missing")
         if args.buffer_mode == "copy" and row.get("used_no_copy_buffers") is not False:
             reasons.append(f"{kernel}: copy mode unexpectedly used no-copy buffers")
+        if row.get("compare_mode", "full") != args.compare_mode:
+            reasons.append(f"{kernel}: compare mode mismatch")
+        if bool(row.get("full_compare_ran", True)) != (args.compare_mode == "full"):
+            reasons.append(f"{kernel}: full_compare_ran mismatch")
         if row.get("top1_match") is not True or row.get("top20_set_match") is not True:
             reasons.append(f"{kernel}: top-k mismatch")
         if row.get("expected_top1") != row.get("actual_top1"):
             reasons.append(f"{kernel}: expected_top1/actual_top1 mismatch")
-        if int(row.get("mismatches", -1)) != 0:
-            reasons.append(f"{kernel}: mismatches={row.get('mismatches')}")
+        mismatches = row.get("mismatches")
+        if args.compare_mode == "full":
+            if int(mismatches if mismatches is not None else -1) != 0:
+                reasons.append(f"{kernel}: mismatches={mismatches}")
+        elif mismatches is not None:
+            reasons.append(f"{kernel}: topk compare mode should not emit full mismatches")
         if int(row.get("kernel_repeats", -1)) != args.kernel_repeats:
             reasons.append(f"{kernel}: kernel repeats mismatch")
         if int(row.get("benchmark_iters", -1)) != args.benchmark_iters:
@@ -172,6 +183,8 @@ def build_command(args: argparse.Namespace) -> list[str]:
         str(args.benchmark_iters),
         "--benchmark-command-mode",
         args.benchmark_command_mode,
+        "--compare-mode",
+        args.compare_mode,
         "--buffer-mode",
         args.buffer_mode,
         "--matrix-kernels",
@@ -272,14 +285,14 @@ def collect_failure_reasons(samples: list[dict[str, Any]]) -> list[str]:
     first_rows = samples[0]["rows"]
     for sample in samples[1:]:
         header = sample["header"]
-        for key in ("rows", "cols", "buffer_mode", "kernel_repeats", "benchmark_iters", "benchmark_command_mode"):
+        for key in ("rows", "cols", "buffer_mode", "kernel_repeats", "benchmark_iters", "benchmark_command_mode", "compare_mode"):
             if header.get(key) != first_header.get(key):
                 reasons.append(f"sample {sample['sample_index']}: header {key} changed")
         rows = sample["rows"]
         if [row.get("kernel") for row in rows] != [row.get("kernel") for row in first_rows]:
             reasons.append(f"sample {sample['sample_index']}: row kernels changed")
         for row, first_row in zip(rows, first_rows, strict=False):
-            for key in ("kernel", "buffer_mode", "actual_buffer_mode", "expected_top1", "actual_top1"):
+            for key in ("kernel", "buffer_mode", "actual_buffer_mode", "expected_top1", "actual_top1", "compare_mode", "full_compare_ran"):
                 if row.get(key) != first_row.get(key):
                     reasons.append(f"sample {sample['sample_index']}: row {row.get('kernel')} {key} changed")
     return reasons
@@ -314,6 +327,7 @@ def main() -> None:
             "kernel_repeats": args.kernel_repeats,
             "benchmark_iters": args.benchmark_iters,
             "benchmark_command_mode": args.benchmark_command_mode,
+            "compare_mode": args.compare_mode,
         },
         "includes_auto_diagnostic": includes_auto,
         "actual_kernels_seen_by_kernel": actual_kernels_seen(samples),

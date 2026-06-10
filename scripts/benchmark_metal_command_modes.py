@@ -30,6 +30,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--artifact-dir", default="")
     parser.add_argument("--kernels", default="scalar,threadgroup")
     parser.add_argument("--buffer-mode", choices=["copy", "nocopy"], default="nocopy")
+    parser.add_argument("--compare-mode", "--comparison-mode", choices=["full", "topk"], default="full")
     parser.add_argument("--kernel-repeats", type=int, default=5)
     parser.add_argument("--benchmark-iters", type=int, default=10)
     parser.add_argument("--samples", type=int, default=3)
@@ -91,6 +92,8 @@ def run_reuse_report(args: argparse.Namespace, out: Path, mode: str) -> dict[str
         str(args.samples),
         "--benchmark-command-mode",
         mode,
+        "--compare-mode",
+        args.compare_mode,
     ]
     proc = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if proc.returncode != 0:
@@ -108,6 +111,8 @@ def collect_failures(mode: str, report: dict[str, Any], args: argparse.Namespace
     settings = report.get("settings", {})
     if settings.get("benchmark_command_mode") != mode:
         reasons.append(f"{mode}: settings benchmark_command_mode mismatch")
+    if settings.get("compare_mode", "full") != args.compare_mode:
+        reasons.append(f"{mode}: settings compare mode mismatch")
     if int(settings.get("samples", -1)) != args.samples:
         reasons.append(f"{mode}: sample count setting mismatch")
     if int(settings.get("benchmark_iters", -1)) != args.benchmark_iters:
@@ -118,14 +123,24 @@ def collect_failures(mode: str, report: dict[str, Any], args: argparse.Namespace
         header = sample.get("header", {})
         if header.get("benchmark_command_mode") != mode:
             reasons.append(f"{mode}: sample {sample.get('sample_index')} header command mode mismatch")
+        if header.get("compare_mode", "full") != args.compare_mode:
+            reasons.append(f"{mode}: sample {sample.get('sample_index')} header compare mode mismatch")
         for row in sample.get("rows", []):
             kernel = row.get("kernel")
+            if row.get("compare_mode", "full") != args.compare_mode:
+                reasons.append(f"{mode}: {kernel} compare mode mismatch")
+            if bool(row.get("full_compare_ran", True)) != (args.compare_mode == "full"):
+                reasons.append(f"{mode}: {kernel} full_compare_ran mismatch")
             if row.get("persistent_command_mode") != mode:
                 reasons.append(f"{mode}: {kernel} persistent command mode mismatch")
             if row.get("top1_match") is not True or row.get("top20_set_match") is not True:
                 reasons.append(f"{mode}: {kernel} top-k mismatch")
-            if int(row.get("mismatches", -1)) != 0:
-                reasons.append(f"{mode}: {kernel} mismatches={row.get('mismatches')}")
+            mismatches = row.get("mismatches")
+            if args.compare_mode == "full":
+                if int(mismatches if mismatches is not None else -1) != 0:
+                    reasons.append(f"{mode}: {kernel} mismatches={mismatches}")
+            elif mismatches is not None:
+                reasons.append(f"{mode}: {kernel} topk compare mode should not emit full mismatches")
             if args.buffer_mode == "nocopy" and row.get("used_no_copy_buffers") is not True:
                 reasons.append(f"{mode}: {kernel} no-copy evidence missing")
             if float(row.get("fixture_load_ms", -1.0)) != 0.0:
@@ -202,6 +217,7 @@ def main() -> None:
             "kernel_repeats": args.kernel_repeats,
             "benchmark_iters": args.benchmark_iters,
             "samples": args.samples,
+            "compare_mode": args.compare_mode,
             "command_modes": list(COMMAND_MODES),
         },
         "semantics_note": (

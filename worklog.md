@@ -938,3 +938,48 @@
   - Code-reviewer APPROVED `scripts/benchmark_metal_command_modes.py`, including command-mode separation, schema clarity after `kernels` normalization, validation of `persistent_command_mode`, and safe build/subprocess behavior.
 - Decision: keep the command-mode comparison wrapper as benchmark infrastructure. Do not change defaults.
 - Next optimization target: use the clarified evidence to choose between a guarded `batched` benchmark default experiment, deeper host compare/top-k overhead measurement, or the next Metal kernel/layout optimization; correctness gates stay mandatory before any throughput change.
+
+## 2026-06-10 Resumed ultragoal G077 — opt-in top-k-only Metal logits comparison mode
+- Prototyped a benchmark-only comparison mode for Metal logits host-side checks.
+- Design:
+  - Default behavior remains full per-logit tolerance comparison. Omitting `--compare-mode` emits `compare_mode="full"`, `full_compare_ran=true`, numeric `max_abs_diff/max_rel_diff`, and `mismatches=0` for passing fixtures.
+  - New opt-in `--compare-mode topk` / `--comparison-mode topk` requires `--expect-topk`; without `--expect-topk` the CLI fails with `TopKCompareModeRequiresExpectTopK`.
+  - Top-k mode skips the full per-logit tolerance scan and emits `max_abs_diff=null`, `max_rel_diff=null`, and `mismatches=null`, while still enforcing fixture top-1 and top-20 set checks.
+  - Benchmark wrappers now propagate and validate `compare_mode` across one-shot/persistent, reusable-fixture, command-mode comparison, and matrix reports.
+  - This is benchmark instrumentation only; no runtime default, Metal kernel, HF bridge behavior, or acceptance gate was weakened.
+- Targeted validation commands:
+  - `zig fmt --check src/metal_logits_test.zig`
+  - `zig build -Denable-metal=true`
+  - `python3 -m py_compile scripts/benchmark_metal_logits.py scripts/benchmark_metal_logits_reuse.py scripts/benchmark_metal_command_modes.py scripts/benchmark_metal_logits_matrix.py scripts/run_alignment_tests.py`
+  - Direct full/default/topk checks with `./zig-out/bin/metal_logits_v1 zig-out/metal/kernels.metallib --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk --kernel threadgroup --buffer-mode nocopy --kernel-repeats 2` plus explicit `--compare-mode full`, explicit `--compare-mode topk`, and alias `--comparison-mode topk`.
+  - Negative gate: direct `--compare-mode topk` without `--expect-topk` failed as expected.
+  - `uv run python scripts/benchmark_metal_logits.py --no-build --kernel threadgroup --buffer-mode nocopy --kernel-repeats 5 --persistent-iters 10 --persistent-samples 3 --repeats 3 --cpu-repeats 1 --compare-mode full --out artifacts/benchmarks/g077_topk_compare/benchmark_full.json`
+  - `uv run python scripts/benchmark_metal_logits.py --no-build --kernel threadgroup --buffer-mode nocopy --kernel-repeats 5 --persistent-iters 10 --persistent-samples 3 --repeats 3 --cpu-repeats 1 --compare-mode topk --out artifacts/benchmarks/g077_topk_compare/benchmark_topk.json`
+  - `uv run python scripts/benchmark_metal_logits_reuse.py --no-build --samples 2 --kernel-repeats 5 --benchmark-iters 10 --benchmark-command-mode per_iter --kernels scalar,threadgroup --buffer-mode nocopy --out artifacts/benchmarks/g077_topk_compare/reuse_default_full_samples2.json`
+  - `uv run python scripts/benchmark_metal_logits_reuse.py --no-build --samples 2 --kernel-repeats 5 --benchmark-iters 10 --benchmark-command-mode per_iter --compare-mode topk --kernels scalar,threadgroup --buffer-mode nocopy --out artifacts/benchmarks/g077_topk_compare/reuse_topk_samples2.json`
+  - `uv run python scripts/benchmark_metal_command_modes.py --no-build --samples 1 --kernel-repeats 5 --benchmark-iters 10 --compare-mode full --kernels scalar,threadgroup --buffer-mode nocopy --out artifacts/benchmarks/g077_topk_compare/command_modes_full_samples1.json --artifact-dir artifacts/benchmarks/g077_topk_compare/command_modes_full_runs`
+  - `uv run python scripts/benchmark_metal_command_modes.py --no-build --samples 1 --kernel-repeats 5 --benchmark-iters 10 --compare-mode topk --kernels scalar,threadgroup --buffer-mode nocopy --out artifacts/benchmarks/g077_topk_compare/command_modes_topk_samples1.json --artifact-dir artifacts/benchmarks/g077_topk_compare/command_modes_topk_runs`
+  - `uv run python scripts/benchmark_metal_logits_matrix.py --no-build --persistent-only --warmup 0 --repeats 0 --cpu-repeats 1 --kernel-repeats 5 --persistent-iters 10 --persistent-samples 1 --kernels scalar,threadgroup --buffer-modes nocopy --out artifacts/benchmarks/g077_topk_compare/matrix_default_full.json --artifact-dir artifacts/benchmarks/g077_topk_compare/matrix_default_full_runs`
+  - `uv run python scripts/benchmark_metal_logits_matrix.py --no-build --persistent-only --warmup 0 --repeats 0 --cpu-repeats 1 --kernel-repeats 5 --persistent-iters 10 --persistent-samples 2 --compare-mode topk --kernels scalar,threadgroup --buffer-modes nocopy --out artifacts/benchmarks/g077_topk_compare/matrix_topk.json --artifact-dir artifacts/benchmarks/g077_topk_compare/matrix_topk_runs`
+- Targeted validation results:
+  - Direct default and explicit full retained `compare_mode=full`, `full_compare_ran=true`, top-1/top-20 matches, expected/actual top-1 `353`, numeric diff fields, and `mismatches=0`.
+  - Direct topk and alias topk emitted `compare_mode=topk`, `full_compare_ran=false`, `mismatches=null`, `max_abs_diff=null`, `max_rel_diff=null`, top-1/top-20 matches, and expected/actual top-1 `353`.
+  - `benchmark_metal_logits.py` full vs topk sample medians: full host compare `23.214084 ms`, topk host compare `23.757209 ms`; full measured total `475.278084 ms`, topk measured total `471.998125 ms`; full persistent per-kernel-repeat `10.68014144897461 ms`, topk `10.709080696105957 ms`.
+  - Reusable-fixture default/full and topk reports passed with `sample_count=2`, stable compare-mode headers/rows, no-copy evidence, top-k checks, and mode-appropriate mismatch fields.
+  - Command-mode comparison reports passed for full and topk. Topk diagnostic deltas in the one-sample report: scalar batched vs per_iter `-0.19737958908081055 ms` per kernel repeat (`-1.58%`); threadgroup batched vs per_iter `-0.5583596229553223 ms` (`-5.02%`).
+  - Matrix reports passed for default/full and topk. Topk persistent ranking remained `threadgroup/nocopy` (`10.625460147857666 ms`) ahead of `scalar/nocopy` (`12.251460552215576 ms`).
+  - During validation, `benchmark_metal_command_modes.py` initially failed on topk rows because it still attempted `int(None)` for `mismatches`. The validation logic was fixed to require `mismatches=0` only in full mode and `mismatches=null` in topk mode; rerunning the command-mode reports then passed.
+- Full verification commands:
+  - `zig build`
+  - `zig build -Dtarget=x86_64-linux --summary all`
+  - `zig build -Denable-metal=true metal-smoke`
+  - `zig build -Denable-metal=true metal-logits-test -- --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk --kernel-repeats 2`
+  - `uv run python scripts/run_alignment_tests.py`
+- Full verification results:
+  - Linux cross build succeeded.
+  - Metal smoke reported mismatches `0`.
+  - Full-vocab Metal logits fixture ran in default full comparison mode and retained `top1_match=true`, `top20_set_match=true`, expected/actual top-1 `353`, and mismatches `0`.
+  - HF bridge alignment remained intact for all three required prompts with max absolute logit diff `0.0`; sampling smoke remained `temperature=0.6`, `top_p=0.95`, `top_k=20`, candidate count `20`, selected token `353`.
+- Test-engineer subagent supplied a validation checklist; all required direct, negative, wrapper, matrix, command-mode, and full alignment checks from that checklist were run before commit.
+- Decision: keep top-k-only comparison as opt-in benchmark instrumentation, not as a default or correctness-gate replacement. The small benchmark sample did not show a clear host-compare timing win, so do not promote it beyond measurement control.
+- Next optimization target: use the clarified measurement controls to decide whether the next safe story should target top-k selection cost directly, command-buffer dispatch overhead, or kernel/layout work while preserving the full default correctness path.

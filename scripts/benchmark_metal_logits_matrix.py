@@ -42,6 +42,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--artifact-dir", default="artifacts/benchmarks/matrix_runs")
     parser.add_argument("--kernels", default=",".join(DEFAULT_KERNELS), help="Comma-separated subset: scalar,threadgroup,auto; auto is diagnostic-only")
     parser.add_argument("--buffer-modes", default=",".join(BUFFER_MODES), help="Comma-separated subset: copy,nocopy")
+    parser.add_argument("--compare-mode", "--comparison-mode", choices=["full", "topk"], default="full")
     parser.add_argument("--warmup", type=int, default=1)
     parser.add_argument("--repeats", type=int, default=2)
     parser.add_argument("--cpu-repeats", type=int, default=1)
@@ -123,7 +124,14 @@ def positive_number(value: Any) -> bool:
     return isinstance(value, (int, float)) and value > 0 and value == value and value not in (float("inf"), float("-inf"))
 
 
-def row_passed(report: dict[str, Any], kernel: str, buffer_mode: str, repeats: int, kernel_repeats: int) -> tuple[bool, list[str]]:
+def row_passed(
+    report: dict[str, Any],
+    kernel: str,
+    buffer_mode: str,
+    repeats: int,
+    kernel_repeats: int,
+    compare_mode: str,
+) -> tuple[bool, list[str]]:
     reasons: list[str] = []
     record = report.get("metal_last_record", {})
     cpu = report.get("cpu_reference", {})
@@ -153,6 +161,10 @@ def row_passed(report: dict[str, Any], kernel: str, buffer_mode: str, repeats: i
         reasons.append("requested/top-level buffer mode mismatch")
     if record.get("kernel") != kernel or record.get("buffer_mode") != buffer_mode:
         reasons.append("last-record kernel or buffer mode mismatch")
+    if report.get("compare_mode", "full") != record.get("compare_mode", "full") or report.get("compare_mode", "full") != compare_mode:
+        reasons.append("comparison mode mismatch")
+    if bool(record.get("full_compare_ran", True)) != (compare_mode == "full"):
+        reasons.append("full_compare_ran mismatch")
     record_actual_kernel = record.get("actual_kernel")
     if kernel == "auto":
         if record_actual_kernel not in {"scalar", "threadgroup"}:
@@ -170,8 +182,12 @@ def row_passed(report: dict[str, Any], kernel: str, buffer_mode: str, repeats: i
         reasons.append("expected/actual top1 differ")
     if not record.get("top20_set_match", False):
         reasons.append("top20 mismatch")
-    if int(record.get("mismatches", -1)) != 0:
-        reasons.append(f"mismatches={record.get('mismatches')}")
+    mismatches = record.get("mismatches")
+    if compare_mode == "full":
+        if int(mismatches if mismatches is not None else -1) != 0:
+            reasons.append(f"mismatches={mismatches}")
+    elif mismatches is not None:
+        reasons.append(f"topk comparison mode unexpectedly emitted mismatches={mismatches}")
     if cpu.get("cpu_numpy_mismatches") != 0:
         reasons.append(f"cpu reference mismatches={cpu.get('cpu_numpy_mismatches')}")
     if cpu.get("cpu_numpy_top1") != record.get("expected_top1"):
@@ -255,6 +271,8 @@ def run_row(args: argparse.Namespace, kernel: str, buffer_mode: str, row_out: Pa
         buffer_mode,
         "--kernel-repeats",
         str(args.kernel_repeats),
+        "--compare-mode",
+        args.compare_mode,
         "--persistent-iters",
         str(args.persistent_iters),
         "--persistent-samples",
@@ -275,7 +293,7 @@ def run_row(args: argparse.Namespace, kernel: str, buffer_mode: str, row_out: Pa
             "stderr_tail": proc.stderr[-2000:],
         }
     report = json.loads(row_out.read_text())
-    ok, reasons = row_passed(report, kernel, buffer_mode, args.repeats, args.kernel_repeats)
+    ok, reasons = row_passed(report, kernel, buffer_mode, args.repeats, args.kernel_repeats, args.compare_mode)
     return {
         "variant_id": f"{kernel}/{buffer_mode}",
         "kernel": kernel,
@@ -496,6 +514,7 @@ def main() -> None:
             "repeats": args.repeats,
             "cpu_repeats": args.cpu_repeats,
             "kernel_repeats": args.kernel_repeats,
+            "compare_mode": args.compare_mode,
             "persistent_iters": args.persistent_iters,
             "persistent_samples": args.persistent_samples,
             "persistent_only": args.persistent_only,

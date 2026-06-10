@@ -28,6 +28,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cpu-repeats", type=int, default=2)
     parser.add_argument("--kernel", choices=["scalar", "threadgroup", "auto"], default="scalar")
     parser.add_argument("--buffer-mode", choices=["copy", "nocopy"], default="copy")
+    parser.add_argument("--compare-mode", "--comparison-mode", choices=["full", "topk"], default="full")
     parser.add_argument("--kernel-repeats", type=int, default=5)
     parser.add_argument(
         "--persistent-iters",
@@ -101,6 +102,8 @@ def run_metal(args: argparse.Namespace) -> tuple[list[float], list[float], list[
         args.buffer_mode,
         "--kernel-repeats",
         str(args.kernel_repeats),
+        "--compare-mode",
+        args.compare_mode,
     ]
     for _ in range(args.warmup):
         subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL)
@@ -132,6 +135,8 @@ def run_persistent_metal_once(args: argparse.Namespace) -> tuple[float, dict]:
         args.buffer_mode,
         "--kernel-repeats",
         str(args.kernel_repeats),
+        "--compare-mode",
+        args.compare_mode,
         "--benchmark-iters",
         str(args.persistent_iters),
     ]
@@ -267,6 +272,7 @@ def main() -> None:
         "persistent_only": args.persistent_only,
         "requested_buffer_mode": args.buffer_mode,
         "buffer_mode": args.buffer_mode,
+        "compare_mode": args.compare_mode,
         "actual_used_no_copy_count": no_copy_count,
         "actual_used_no_copy_all": actual_used_no_copy_all,
         "persistent_actual_used_no_copy": persistent_used_no_copy,

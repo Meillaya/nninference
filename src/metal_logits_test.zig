@@ -78,6 +78,18 @@ const BenchmarkCommandMode = enum {
     }
 };
 
+const CompareMode = enum {
+    full,
+    topk,
+
+    fn label(self: CompareMode) []const u8 {
+        return switch (self) {
+            .full => "full",
+            .topk => "topk",
+        };
+    }
+};
+
 const Options = struct {
     metallib_path: []const u8,
     fixture_path: ?[]const u8 = null,
@@ -85,6 +97,7 @@ const Options = struct {
     kernel_repeats: u32 = 1,
     benchmark_iters: u32 = 0,
     benchmark_command_mode: BenchmarkCommandMode = .per_iter,
+    compare_mode: CompareMode = .full,
     kernel: Kernel = .scalar,
     matrix_kernels: ?[]const u8 = null,
     buffer_mode: BufferMode = .copy,
@@ -92,7 +105,7 @@ const Options = struct {
 
 fn usage() []const u8 {
     return
-    \\metal_logits_v1 <metallib> [--fixture artifacts/.../fixture.bin] [--expect-topk] [--kernel scalar|threadgroup|auto] [--matrix-kernels scalar,threadgroup] [--buffer-mode copy|nocopy] [--kernel-repeats N] [--benchmark-iters N] [--benchmark-command-mode per_iter|batched]
+    \\metal_logits_v1 <metallib> [--fixture artifacts/.../fixture.bin] [--expect-topk] [--kernel scalar|threadgroup|auto] [--matrix-kernels scalar,threadgroup] [--buffer-mode copy|nocopy] [--kernel-repeats N] [--benchmark-iters N] [--benchmark-command-mode per_iter|batched] [--compare-mode full|topk]
     \\
     \\Prototype-only CLI for the sidecar Metal LM-head logits projection.
     \\It does not run the transformer or replace infer_cpu_v1's default HF bridge.
@@ -100,6 +113,9 @@ fn usage() []const u8 {
     \\the pipeline supports its fixed 256-thread layout, otherwise scalar.
     \\--benchmark-iters keeps one fixture load and one Metal buffer setup alive
     \\for N measured command-buffer iterations.
+    \\--compare-mode topk is opt-in benchmark instrumentation: it requires
+    \\--expect-topk and skips the full per-logit tolerance scan while still
+    \\checking fixture top-1/top-20. The default remains full.
     \\--matrix-kernels is benchmark-only: it loads the fixture once, emits a
     \\shared-load header, then emits one JSON result per requested kernel.
     \\
@@ -131,17 +147,17 @@ pub fn main(init: std.process.Init) !void {
         const fixture_load_ms = elapsedMsSince(init.io, fixture_load_start);
         defer fixture.deinit(allocator);
         if (opt.matrix_kernels) |matrix_kernels| {
-            try runMatrixCases(init.io, stdout, allocator, metallib_path_z, "checkpoint_f32_logits_matmul", fixture, opt.expect_topk, opt.kernel_repeats, opt.benchmark_iters, opt.benchmark_command_mode, matrix_kernels, opt.buffer_mode, fixture_load_ms);
+            try runMatrixCases(init.io, stdout, allocator, metallib_path_z, "checkpoint_f32_logits_matmul", fixture, opt.expect_topk, opt.kernel_repeats, opt.benchmark_iters, opt.benchmark_command_mode, opt.compare_mode, matrix_kernels, opt.buffer_mode, fixture_load_ms);
         } else {
-            try runCase(init.io, stdout, allocator, metallib_path_z, "checkpoint_f32_logits_matmul", fixture, opt.expect_topk, opt.kernel_repeats, opt.benchmark_iters, opt.benchmark_command_mode, opt.kernel, opt.buffer_mode, fixture_load_ms);
+            try runCase(init.io, stdout, allocator, metallib_path_z, "checkpoint_f32_logits_matmul", fixture, opt.expect_topk, opt.kernel_repeats, opt.benchmark_iters, opt.benchmark_command_mode, opt.compare_mode, opt.kernel, opt.buffer_mode, fixture_load_ms);
         }
     } else {
         const fixture = try makeTinyFixture(allocator);
         defer fixture.deinit(allocator);
         if (opt.matrix_kernels) |matrix_kernels| {
-            try runMatrixCases(init.io, stdout, allocator, metallib_path_z, "tiny_f32_logits_matmul", fixture, opt.expect_topk, opt.kernel_repeats, opt.benchmark_iters, opt.benchmark_command_mode, matrix_kernels, opt.buffer_mode, 0.0);
+            try runMatrixCases(init.io, stdout, allocator, metallib_path_z, "tiny_f32_logits_matmul", fixture, opt.expect_topk, opt.kernel_repeats, opt.benchmark_iters, opt.benchmark_command_mode, opt.compare_mode, matrix_kernels, opt.buffer_mode, 0.0);
         } else {
-            try runCase(init.io, stdout, allocator, metallib_path_z, "tiny_f32_logits_matmul", fixture, opt.expect_topk, opt.kernel_repeats, opt.benchmark_iters, opt.benchmark_command_mode, opt.kernel, opt.buffer_mode, 0.0);
+            try runCase(init.io, stdout, allocator, metallib_path_z, "tiny_f32_logits_matmul", fixture, opt.expect_topk, opt.kernel_repeats, opt.benchmark_iters, opt.benchmark_command_mode, opt.compare_mode, opt.kernel, opt.buffer_mode, 0.0);
         }
     }
 }
@@ -192,11 +208,16 @@ fn parseOptions(args: []const []const u8) !Options {
             i += 1;
             if (i >= args.len) return error.MissingBenchmarkCommandMode;
             opt.benchmark_command_mode = try parseBenchmarkCommandMode(args[i]);
+        } else if (std.mem.eql(u8, args[i], "--compare-mode") or std.mem.eql(u8, args[i], "--comparison-mode")) {
+            i += 1;
+            if (i >= args.len) return error.MissingCompareMode;
+            opt.compare_mode = try parseCompareMode(args[i]);
         } else {
             std.debug.print("unknown argument: {s}\n", .{args[i]});
             return error.UnknownArgument;
         }
     }
+    if (opt.compare_mode == .topk and !opt.expect_topk) return error.TopKCompareModeRequiresExpectTopK;
     return opt;
 }
 
@@ -211,6 +232,12 @@ fn parseBenchmarkCommandMode(label: []const u8) !BenchmarkCommandMode {
     if (std.mem.eql(u8, label, "per_iter")) return .per_iter;
     if (std.mem.eql(u8, label, "batched")) return .batched;
     return error.InvalidBenchmarkCommandMode;
+}
+
+fn parseCompareMode(label: []const u8) !CompareMode {
+    if (std.mem.eql(u8, label, "full")) return .full;
+    if (std.mem.eql(u8, label, "topk")) return .topk;
+    return error.InvalidCompareMode;
 }
 
 fn makeTinyFixture(allocator: std.mem.Allocator) !Fixture {
@@ -297,7 +324,7 @@ fn readF32SliceDirect(file: Io.File, io: Io, out: []f32, offset: *u64) !void {
     offset.* += bytes.len;
 }
 
-fn runCase(io: Io, stdout: *Io.Writer, allocator: std.mem.Allocator, metallib_path_z: [:0]const u8, fixture_name: []const u8, fixture: Fixture, expect_topk: bool, kernel_repeats: u32, benchmark_iters: u32, benchmark_command_mode: BenchmarkCommandMode, kernel: Kernel, buffer_mode: BufferMode, fixture_load_ms: f64) !void {
+fn runCase(io: Io, stdout: *Io.Writer, allocator: std.mem.Allocator, metallib_path_z: [:0]const u8, fixture_name: []const u8, fixture: Fixture, expect_topk: bool, kernel_repeats: u32, benchmark_iters: u32, benchmark_command_mode: BenchmarkCommandMode, compare_mode: CompareMode, kernel: Kernel, buffer_mode: BufferMode, fixture_load_ms: f64) !void {
     const total_start = Io.Clock.awake.now(io);
     const actual = try allocator.alloc(f32, fixture.rows);
     defer allocator.free(actual);
@@ -368,8 +395,9 @@ fn runCase(io: Io, stdout: *Io.Writer, allocator: std.mem.Allocator, metallib_pa
     }
 
     const compare_start = Io.Clock.awake.now(io);
-    const diff = compare(fixture.expected, actual, fixture.tol);
-    if (diff.mismatches != 0) {
+    const full_compare_ran = compare_mode == .full;
+    const diff = if (full_compare_ran) compare(fixture.expected, actual, fixture.tol) else Diff{};
+    if (full_compare_ran and diff.mismatches != 0) {
         try stdout.print(
             "metal logits mismatch: fixture={s} mismatches={d} max_abs={d} max_rel={d}\n",
             .{ fixture_name, diff.mismatches, diff.max_abs, diff.max_rel },
@@ -406,7 +434,7 @@ fn runCase(io: Io, stdout: *Io.Writer, allocator: std.mem.Allocator, metallib_pa
     const actual_buffer_mode = if (result.used_no_copy_buffers != 0) "nocopy" else "copy";
     const actual_kernel_label = cString(&result.actual_kernel_name);
     try stdout.print(
-        "{{\"fixture\":\"{s}\",\"device\":\"{s}\",\"kernel\":\"{s}\",\"actual_kernel\":\"{s}\",\"buffer_mode\":\"{s}\",\"actual_buffer_mode\":\"{s}\",\"used_no_copy_buffers\":{},\"rows\":{d},\"cols\":{d},\"max_abs_diff\":{d},\"max_rel_diff\":{d},\"mismatches\":{d},\"tolerance_max_abs\":{d},\"tolerance_max_rel\":{d},\"expected_top1\":{d},\"actual_top1\":{d},\"top1_match\":{},\"top20_set_match\":{},\"kernel_repeats\":{d},\"elapsed_ms\":{d},\"elapsed_ms_per_repeat\":{d},\"fixture_load_ms\":{d},\"metal_bridge_wall_ms\":{d},\"host_compare_ms\":{d},\"total_cli_measured_ms\":{d}",
+        "{{\"fixture\":\"{s}\",\"device\":\"{s}\",\"kernel\":\"{s}\",\"actual_kernel\":\"{s}\",\"buffer_mode\":\"{s}\",\"actual_buffer_mode\":\"{s}\",\"used_no_copy_buffers\":{},\"rows\":{d},\"cols\":{d},\"compare_mode\":\"{s}\",\"full_compare_ran\":{}",
         .{
             fixture_name,
             cString(&probe.device_name),
@@ -417,9 +445,21 @@ fn runCase(io: Io, stdout: *Io.Writer, allocator: std.mem.Allocator, metallib_pa
             result.used_no_copy_buffers != 0,
             fixture.rows,
             fixture.cols,
-            diff.max_abs,
-            diff.max_rel,
-            diff.mismatches,
+            compare_mode.label(),
+            full_compare_ran,
+        },
+    );
+    if (full_compare_ran) {
+        try stdout.print(
+            ",\"max_abs_diff\":{d},\"max_rel_diff\":{d},\"mismatches\":{d}",
+            .{ diff.max_abs, diff.max_rel, diff.mismatches },
+        );
+    } else {
+        try stdout.writeAll(",\"max_abs_diff\":null,\"max_rel_diff\":null,\"mismatches\":null");
+    }
+    try stdout.print(
+        ",\"tolerance_max_abs\":{d},\"tolerance_max_rel\":{d},\"expected_top1\":{d},\"actual_top1\":{d},\"top1_match\":{},\"top20_set_match\":{},\"kernel_repeats\":{d},\"elapsed_ms\":{d},\"elapsed_ms_per_repeat\":{d},\"fixture_load_ms\":{d},\"metal_bridge_wall_ms\":{d},\"host_compare_ms\":{d},\"total_cli_measured_ms\":{d}",
+        .{
             fixture.tol.max_abs,
             fixture.tol.max_rel,
             expected_top1,
@@ -451,10 +491,10 @@ fn runCase(io: Io, stdout: *Io.Writer, allocator: std.mem.Allocator, metallib_pa
     try stdout.writeAll("}\n");
 }
 
-fn runMatrixCases(io: Io, stdout: *Io.Writer, allocator: std.mem.Allocator, metallib_path_z: [:0]const u8, fixture_name: []const u8, fixture: Fixture, expect_topk: bool, kernel_repeats: u32, benchmark_iters: u32, benchmark_command_mode: BenchmarkCommandMode, matrix_kernels: []const u8, buffer_mode: BufferMode, shared_fixture_load_ms: f64) !void {
+fn runMatrixCases(io: Io, stdout: *Io.Writer, allocator: std.mem.Allocator, metallib_path_z: [:0]const u8, fixture_name: []const u8, fixture: Fixture, expect_topk: bool, kernel_repeats: u32, benchmark_iters: u32, benchmark_command_mode: BenchmarkCommandMode, compare_mode: CompareMode, matrix_kernels: []const u8, buffer_mode: BufferMode, shared_fixture_load_ms: f64) !void {
     try stdout.print(
-        "{{\"matrix\":\"begin\",\"fixture\":\"{s}\",\"shared_fixture_load_ms\":{d},\"rows\":{d},\"cols\":{d},\"buffer_mode\":\"{s}\",\"kernel_repeats\":{d},\"benchmark_iters\":{d},\"benchmark_command_mode\":\"{s}\"}}\n",
-        .{ fixture_name, shared_fixture_load_ms, fixture.rows, fixture.cols, buffer_mode.label(), kernel_repeats, benchmark_iters, benchmark_command_mode.label() },
+        "{{\"matrix\":\"begin\",\"fixture\":\"{s}\",\"shared_fixture_load_ms\":{d},\"rows\":{d},\"cols\":{d},\"buffer_mode\":\"{s}\",\"kernel_repeats\":{d},\"benchmark_iters\":{d},\"benchmark_command_mode\":\"{s}\",\"compare_mode\":\"{s}\"}}\n",
+        .{ fixture_name, shared_fixture_load_ms, fixture.rows, fixture.cols, buffer_mode.label(), kernel_repeats, benchmark_iters, benchmark_command_mode.label(), compare_mode.label() },
     );
     var count: usize = 0;
     var split = std.mem.splitScalar(u8, matrix_kernels, ',');
@@ -462,7 +502,7 @@ fn runMatrixCases(io: Io, stdout: *Io.Writer, allocator: std.mem.Allocator, meta
         const trimmed = std.mem.trim(u8, raw_kernel, " \t\r\n");
         if (trimmed.len == 0) continue;
         const kernel = try parseKernel(trimmed);
-        try runCase(io, stdout, allocator, metallib_path_z, fixture_name, fixture, expect_topk, kernel_repeats, benchmark_iters, benchmark_command_mode, kernel, buffer_mode, 0.0);
+        try runCase(io, stdout, allocator, metallib_path_z, fixture_name, fixture, expect_topk, kernel_repeats, benchmark_iters, benchmark_command_mode, compare_mode, kernel, buffer_mode, 0.0);
         count += 1;
     }
     if (count == 0) return error.EmptyMatrixKernels;
