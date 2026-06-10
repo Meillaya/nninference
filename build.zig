@@ -53,9 +53,10 @@ pub fn build(b: *std.Build) void {
     metal_logits_mod.linkFramework("Metal", .{});
 
     const metal_logits_test = b.addExecutable(.{
-        .name = "metal_logits_test",
+        .name = "metal_logits_v1",
         .root_module = metal_logits_mod,
     });
+    b.installArtifact(metal_logits_test);
 
     const compile_metal = b.addSystemCommand(&.{
         "xcrun", "-sdk", "macosx", "metal", "-c",
@@ -71,8 +72,9 @@ pub fn build(b: *std.Build) void {
     link_metallib.addArg("-o");
     const metallib_file = link_metallib.addOutputFileArg("kernels.metallib");
 
-    const metal_lib_step = b.step("metal-lib", "Compile Metal kernels into a build-cache metallib");
-    metal_lib_step.dependOn(&link_metallib.step);
+    const install_metallib = b.addInstallFile(metallib_file, "metal/kernels.metallib");
+    const metal_lib_step = b.step("metal-lib", "Compile and install Metal kernels into zig-out/metal/kernels.metallib");
+    metal_lib_step.dependOn(&install_metallib.step);
 
     const metal_smoke_run = b.addRunArtifact(metal_smoke);
     metal_smoke_run.addFileArg(metallib_file);

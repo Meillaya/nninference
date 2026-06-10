@@ -38,6 +38,16 @@ const Options = struct {
     expect_topk: bool = false,
 };
 
+fn usage() []const u8 {
+    return
+    \\metal_logits_v1 <metallib> [--fixture artifacts/.../fixture.bin] [--expect-topk]
+    \\
+    \\Prototype-only CLI for the sidecar Metal LM-head logits projection.
+    \\It does not run the transformer or replace infer_cpu_v1's default HF bridge.
+    \\
+    ;
+}
+
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
     const arena = init.arena.allocator();
@@ -48,6 +58,12 @@ pub fn main(init: std.process.Init) !void {
     defer stdout.flush() catch {};
 
     const args = try init.minimal.args.toSlice(arena);
+    for (args[1..]) |arg| {
+        if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
+            try stdout.writeAll(usage());
+            return;
+        }
+    }
     const opt = try parseOptions(args);
     const metallib_path_z = try arena.dupeZ(u8, opt.metallib_path);
 
@@ -200,26 +216,27 @@ fn runCase(stdout: *Io.Writer, allocator: std.mem.Allocator, metallib_path_z: [:
         return error.MetalLogitsMismatch;
     }
 
+    const expected_top1 = argmax(fixture.expected);
+    const actual_top1 = argmax(actual);
     var expected_top: [20]usize = undefined;
     var actual_top: [20]usize = undefined;
-    var top1_match = true;
+    const top1_match = expected_top1 == actual_top1;
     var top20_set_match = true;
     if (expect_topk) {
         fillTopK(fixture.expected, &expected_top);
         fillTopK(actual, &actual_top);
-        top1_match = expected_top[0] == actual_top[0];
         top20_set_match = sameSet(&expected_top, &actual_top);
         if (!top1_match or !top20_set_match) {
             try stdout.print(
                 "metal logits top-k mismatch: expected_top1={d} actual_top1={d} top20_set_match={}\n",
-                .{ expected_top[0], actual_top[0], top20_set_match },
+                .{ expected_top1, actual_top1, top20_set_match },
             );
             return error.MetalLogitsTopKMismatch;
         }
     }
 
     try stdout.print(
-        "{{\"fixture\":\"{s}\",\"device\":\"{s}\",\"rows\":{d},\"cols\":{d},\"max_abs_diff\":{d},\"max_rel_diff\":{d},\"mismatches\":{d},\"tolerance_max_abs\":{d},\"tolerance_max_rel\":{d},\"top1_match\":{},\"top20_set_match\":{},\"elapsed_ms\":{d}}}\n",
+        "{{\"fixture\":\"{s}\",\"device\":\"{s}\",\"rows\":{d},\"cols\":{d},\"max_abs_diff\":{d},\"max_rel_diff\":{d},\"mismatches\":{d},\"tolerance_max_abs\":{d},\"tolerance_max_rel\":{d},\"expected_top1\":{d},\"actual_top1\":{d},\"top1_match\":{},\"top20_set_match\":{},\"elapsed_ms\":{d}}}\n",
         .{
             fixture_name,
             cString(&probe.device_name),
@@ -230,11 +247,25 @@ fn runCase(stdout: *Io.Writer, allocator: std.mem.Allocator, metallib_path_z: [:
             diff.mismatches,
             fixture.tol.max_abs,
             fixture.tol.max_rel,
+            expected_top1,
+            actual_top1,
             top1_match,
             top20_set_match,
             result.elapsed_ms,
         },
     );
+}
+
+fn argmax(values: []const f32) usize {
+    var best_index: usize = 0;
+    var best_value = values[0];
+    for (values[1..], 1..) |value, index| {
+        if (value > best_value) {
+            best_value = value;
+            best_index = index;
+        }
+    }
+    return best_index;
 }
 
 fn fillTopK(values: []const f32, out: *[20]usize) void {

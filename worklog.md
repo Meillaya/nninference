@@ -77,3 +77,19 @@
   - `uv run python scripts/run_alignment_tests.py`
 - HF-bridge alignment remained intact for all three required prompts with max absolute logit diff `0.0`, greedy IDs matching HF forward argmax/generate, and default sampling still at temperature `0.6`, top_p `0.95`, top_k `20`.
 - Known limitation: the Metal path still runs only an isolated LM-head projection using a final hidden state from HF; it is not full native Qwen inference and is not integrated into `infer_cpu_v1` yet.
+
+## 2026-06-10 Ultragoal Gate 4 — explicit prototype CLI integration
+- Exposed the Metal LM-head projection prototype as a separate installed CLI, `zig-out/bin/metal_logits_v1`, rather than changing `infer_cpu_v1` or its default HF bridge.
+- Installed the generated Metal library via `zig build metal-lib` to `zig-out/metal/kernels.metallib`, so the prototype can run outside the Zig build runner with an explicit metallib path and ignored fixture path.
+- Prototype CLI verification: `./zig-out/bin/metal_logits_v1 zig-out/metal/kernels.metallib --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk` returned expected_top1 `353`, actual_top1 `353`, top1_match `true`, top20_set_match `true`, max_abs_diff `0.000011444092`, mismatches `0`; latest artifact is `artifacts/metal/gate4_metal_logits_v1_full_hi.json`.
+- Verification commands run:
+  - `zig fmt build.zig src/metal_logits_test.zig`
+  - `zig build metal-lib`
+  - `zig build`
+  - `./zig-out/bin/metal_logits_v1 --help`
+  - `./zig-out/bin/metal_logits_v1 zig-out/metal/kernels.metallib --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk | tee artifacts/metal/gate4_metal_logits_v1_full_hi.json`
+  - `zig build metal-smoke`
+  - `zig build metal-logits-test -- --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk`
+  - `uv run python scripts/run_alignment_tests.py`
+- Default `infer_cpu_v1` behavior remains HF-bridge based and unchanged; alignment still passes for all three required prompts with max absolute logit diff `0.0` and default sampling temperature `0.6`, top_p `0.95`, top_k `20`.
+- Known limitation: the prototype CLI consumes generated fixtures; it does not tokenize prompts, run transformer blocks, or accelerate the default inference path yet.
