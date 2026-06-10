@@ -35,6 +35,7 @@ const Fixture = struct {
 const Options = struct {
     metallib_path: []const u8,
     fixture_path: ?[]const u8 = null,
+    expect_topk: bool = false,
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -53,11 +54,11 @@ pub fn main(init: std.process.Init) !void {
     if (opt.fixture_path) |path| {
         const fixture = try loadFixture(init.io, allocator, path);
         defer fixture.deinit(allocator);
-        try runCase(stdout, metallib_path_z, "checkpoint_f32_logits_matmul", fixture);
+        try runCase(stdout, allocator, metallib_path_z, "checkpoint_f32_logits_matmul", fixture, opt.expect_topk);
     } else {
         const fixture = try makeTinyFixture(allocator);
         defer fixture.deinit(allocator);
-        try runCase(stdout, metallib_path_z, "tiny_f32_logits_matmul", fixture);
+        try runCase(stdout, allocator, metallib_path_z, "tiny_f32_logits_matmul", fixture, opt.expect_topk);
     }
 }
 
@@ -73,6 +74,8 @@ fn parseOptions(args: []const []const u8) !Options {
             i += 1;
             if (i >= args.len) return error.MissingFixturePath;
             opt.fixture_path = args[i];
+        } else if (std.mem.eql(u8, args[i], "--expect-topk")) {
+            opt.expect_topk = true;
         } else {
             std.debug.print("unknown argument: {s}\n", .{args[i]});
             return error.UnknownArgument;
@@ -113,7 +116,7 @@ fn makeTinyFixture(allocator: std.mem.Allocator) !Fixture {
 }
 
 fn loadFixture(io: Io, allocator: std.mem.Allocator, path: []const u8) !Fixture {
-    const bytes = try Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(512 * 1024 * 1024));
+    const bytes = try Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(2 * 1024 * 1024 * 1024));
     defer allocator.free(bytes);
     if (bytes.len < 24 or !std.mem.eql(u8, bytes[0..8], fixture_magic)) return error.BadFixtureMagic;
     const rows = std.mem.readInt(u32, bytes[8..12], .little);
@@ -162,9 +165,9 @@ fn readF32Slice(allocator: std.mem.Allocator, bytes: []const u8, offset: *usize,
     return out;
 }
 
-fn runCase(stdout: *Io.Writer, metallib_path_z: [:0]const u8, fixture_name: []const u8, fixture: Fixture) !void {
-    const actual = try std.heap.page_allocator.alloc(f32, fixture.rows);
-    defer std.heap.page_allocator.free(actual);
+fn runCase(stdout: *Io.Writer, allocator: std.mem.Allocator, metallib_path_z: [:0]const u8, fixture_name: []const u8, fixture: Fixture, expect_topk: bool) !void {
+    const actual = try allocator.alloc(f32, fixture.rows);
+    defer allocator.free(actual);
     @memset(actual, std.math.nan(f32));
 
     var probe: c.NnMetalProbe = std.mem.zeroes(c.NnMetalProbe);
@@ -197,8 +200,26 @@ fn runCase(stdout: *Io.Writer, metallib_path_z: [:0]const u8, fixture_name: []co
         return error.MetalLogitsMismatch;
     }
 
+    var expected_top: [20]usize = undefined;
+    var actual_top: [20]usize = undefined;
+    var top1_match = true;
+    var top20_set_match = true;
+    if (expect_topk) {
+        fillTopK(fixture.expected, &expected_top);
+        fillTopK(actual, &actual_top);
+        top1_match = expected_top[0] == actual_top[0];
+        top20_set_match = sameSet(&expected_top, &actual_top);
+        if (!top1_match or !top20_set_match) {
+            try stdout.print(
+                "metal logits top-k mismatch: expected_top1={d} actual_top1={d} top20_set_match={}\n",
+                .{ expected_top[0], actual_top[0], top20_set_match },
+            );
+            return error.MetalLogitsTopKMismatch;
+        }
+    }
+
     try stdout.print(
-        "{{\"fixture\":\"{s}\",\"device\":\"{s}\",\"rows\":{d},\"cols\":{d},\"max_abs_diff\":{d},\"max_rel_diff\":{d},\"mismatches\":{d},\"tolerance_max_abs\":{d},\"tolerance_max_rel\":{d},\"elapsed_ms\":{d}}}\n",
+        "{{\"fixture\":\"{s}\",\"device\":\"{s}\",\"rows\":{d},\"cols\":{d},\"max_abs_diff\":{d},\"max_rel_diff\":{d},\"mismatches\":{d},\"tolerance_max_abs\":{d},\"tolerance_max_rel\":{d},\"top1_match\":{},\"top20_set_match\":{},\"elapsed_ms\":{d}}}\n",
         .{
             fixture_name,
             cString(&probe.device_name),
@@ -209,9 +230,45 @@ fn runCase(stdout: *Io.Writer, metallib_path_z: [:0]const u8, fixture_name: []co
             diff.mismatches,
             fixture.tol.max_abs,
             fixture.tol.max_rel,
+            top1_match,
+            top20_set_match,
             result.elapsed_ms,
         },
     );
+}
+
+fn fillTopK(values: []const f32, out: *[20]usize) void {
+    var scores: [20]f32 = @splat(-std.math.inf(f32));
+    out.* = @splat(std.math.maxInt(usize));
+    for (values, 0..) |value, index| {
+        var pos: usize = 0;
+        while (pos < scores.len) : (pos += 1) {
+            if (value > scores[pos]) {
+                var move: usize = scores.len - 1;
+                while (move > pos) : (move -= 1) {
+                    scores[move] = scores[move - 1];
+                    out[move] = out[move - 1];
+                }
+                scores[pos] = value;
+                out[pos] = index;
+                break;
+            }
+        }
+    }
+}
+
+fn sameSet(a: *const [20]usize, b: *const [20]usize) bool {
+    for (a) |item_a| {
+        var found = false;
+        for (b) |item_b| {
+            if (item_a == item_b) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) return false;
+    }
+    return true;
 }
 
 fn cpuMatmulF64(hidden: []const f32, weights: []const f32, out: []f32, rows: usize, cols: usize) void {

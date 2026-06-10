@@ -23,6 +23,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--prompt", default="Hi,")
     parser.add_argument("--out", required=True)
     parser.add_argument("--row-count", type=int, default=64)
+    parser.add_argument("--row-mode", choices=["subset", "full"], default="subset")
     parser.add_argument("--atol", type=float, default=5.0e-3)
     parser.add_argument("--rtol", type=float, default=5.0e-3)
     return parser.parse_args()
@@ -50,39 +51,63 @@ def main() -> None:
         embedding = model.get_input_embeddings().weight.detach().to(torch.float32).contiguous()
 
     vocab_size, hidden_size = embedding.shape
-    selected: set[int] = set(range(4))
-    selected.add(vocab_size - 1)
-    selected.update(i for i in REQUIRED_GREEDY_IDS if 0 <= i < vocab_size)
     top20 = torch.topk(logits, k=20).indices.tolist()
-    selected.update(int(i) for i in top20)
+    if args.row_mode == "full":
+        rows = list(range(vocab_size))
+    else:
+        selected: set[int] = set(range(4))
+        selected.add(vocab_size - 1)
+        selected.update(i for i in REQUIRED_GREEDY_IDS if 0 <= i < vocab_size)
+        selected.update(int(i) for i in top20)
 
-    rng = random.Random(0xC0DEC0DE)
-    while len(selected) < args.row_count:
-        selected.add(rng.randrange(vocab_size))
-    rows = sorted(selected)
+        rng = random.Random(0xC0DEC0DE)
+        while len(selected) < args.row_count:
+            selected.add(rng.randrange(vocab_size))
+        rows = sorted(selected)
 
     weights = embedding[rows, :].contiguous()
     expected = torch.matmul(weights, hidden).to(torch.float32).contiguous()
+    full_matmul_for_top = torch.matmul(embedding, hidden).to(torch.float32).contiguous() if args.row_mode == "full" else None
 
     fixture_path = out_dir / "fixture.bin"
-    payload = bytearray()
-    payload += MAGIC
-    payload += struct.pack("<IIff", len(rows), hidden_size, args.atol, args.rtol)
-    payload += hidden.numpy().astype("<f4", copy=False).tobytes()
-    payload += weights.numpy().astype("<f4", copy=False).tobytes()
-    payload += expected.numpy().astype("<f4", copy=False).tobytes()
-    fixture_path.write_bytes(payload)
+    with fixture_path.open("wb") as f:
+        f.write(MAGIC)
+        f.write(struct.pack("<IIff", len(rows), hidden_size, args.atol, args.rtol))
+        hidden.numpy().astype("<f4", copy=False).tofile(f)
+        weights.numpy().astype("<f4", copy=False).tofile(f)
+        expected.numpy().astype("<f4", copy=False).tofile(f)
 
-    digest = hashlib.sha256(payload).hexdigest()
+    hasher = hashlib.sha256()
+    with fixture_path.open("rb") as f:
+        for chunk in iter(lambda: f.read(16 * 1024 * 1024), b""):
+            hasher.update(chunk)
+    digest = hasher.hexdigest()
+    matmul_top20 = torch.topk(full_matmul_for_top, k=20).indices.tolist() if full_matmul_for_top is not None else []
+    hf_vs_matmul = {}
+    if full_matmul_for_top is not None:
+        diff = (logits - full_matmul_for_top).abs()
+        hf_vs_matmul = {
+            "max_abs_diff": float(diff.max().item()),
+            "max_rel_diff": float((diff / logits.abs().clamp_min(1.0e-12)).max().item()),
+            "hf_top1_matches_matmul_top1": int(top20[0]) == int(matmul_top20[0]),
+            "hf_top20_set_matches_matmul_top20_set": set(map(int, top20)) == set(map(int, matmul_top20)),
+        }
+
     manifest = {
         "fixture_format": "NNLGFIX1",
+        "expected_kind": "torch.matmul(output_embedding_rows, final_hidden_state)",
         "prompt": args.prompt,
         "model_dir": args.model_dir,
+        "row_mode": args.row_mode,
         "rows": len(rows),
         "cols": hidden_size,
         "vocab_size": vocab_size,
-        "row_indices": rows,
-        "top20_for_prompt": top20,
+        "row_indices": rows if args.row_mode != "full" else "implicit_full_vocab_order",
+        "hf_top1_for_prompt": int(top20[0]),
+        "hf_top20_for_prompt": [int(i) for i in top20],
+        "matmul_top1_for_prompt": int(matmul_top20[0]) if matmul_top20 else None,
+        "matmul_top20_for_prompt": [int(i) for i in matmul_top20],
+        "hf_logits_vs_matmul": hf_vs_matmul,
         "required_greedy_ids_included": REQUIRED_GREEDY_IDS,
         "tolerance": {"max_abs": args.atol, "max_rel": args.rtol},
         "fixture_bin": fixture_path.name,

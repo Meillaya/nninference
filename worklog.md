@@ -60,3 +60,20 @@
   - `zig build metal-logits-test -- --fixture artifacts/metal/gate2/checkpoint_hi/fixture.bin | tee artifacts/metal/gate2_checkpoint_hi_logits_matmul.json`
 - HF-bridge alignment remained intact for all three required prompts with max absolute logit diff `0.0`, greedy IDs matching HF forward argmax/generate, and default sampling still at temperature `0.6`, top_p `0.95`, top_k `20`.
 - Known limitation: Gate 2 validates row-slice checkpoint matmul only; full-vocab top-1/top-20 agreement is reserved for Gate 3.
+
+## 2026-06-10 Ultragoal Gate 3 — Qwen full-vocab logits prototype
+- Extended the checkpoint fixture generator with `--row-mode full` for a full-vocab Qwen LM-head projection fixture while keeping the binary tensors under ignored `artifacts/`.
+- Extended `src/metal_logits_test.zig` to load large fixtures (up to 2 GiB) and optionally enforce exact top-1/top-20 set agreement for full-vocab projection outputs.
+- Full-vocab fixture: prompt `Hi,`, rows `248320`, hidden size `1024`, fixture SHA256 `eec8fa6b44db79777bec0ae1895bbf93c1cf9c98bab9d41f5b88fc611d5aed1c`. Generated fixture size is about 971 MiB and remains ignored at `artifacts/metal/gate3/full_hi/fixture.bin`.
+- Metal full-vocab result vs PyTorch f32 LM-head projection: max_abs_diff `0.000011444092`, max_rel_diff `0.020768026`, mismatches `0` under the gate's combined abs/rel rule with `5e-3`/`5e-3` tolerance; top1 match `true`; top20 set match `true`; latest measured kernel elapsed `21.036982536315918` ms.
+- HF default-forward nuance for `Hi,`: HF forward logits and explicit f32 LM-head projection both choose token `353`; their top-20 sets differ at the tied cutoff (`10.5`) because several boundary tokens share the same rounded HF logit. All HF tokens strictly above the cutoff are present in the projection top-20. This gate therefore claims full-vocab Metal LM-head projection correctness, not full transformer/logit-path identity.
+- Verification commands run:
+  - `zig fmt build.zig src/metal_logits_test.zig src/metal_smoke.zig`
+  - `zig build metal-smoke`
+  - `zig build metal-logits-test`
+  - `uv run python scripts/generate_checkpoint_logits_fixture.py --model-dir Qwen3.5-0.8B --prompt 'Hi,' --row-mode full --out artifacts/metal/gate3/full_hi`
+  - `zig build metal-logits-test -- --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk`
+  - `zig build`
+  - `uv run python scripts/run_alignment_tests.py`
+- HF-bridge alignment remained intact for all three required prompts with max absolute logit diff `0.0`, greedy IDs matching HF forward argmax/generate, and default sampling still at temperature `0.6`, top_p `0.95`, top_k `20`.
+- Known limitation: the Metal path still runs only an isolated LM-head projection using a final hidden state from HF; it is not full native Qwen inference and is not integrated into `infer_cpu_v1` yet.
