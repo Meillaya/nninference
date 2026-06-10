@@ -859,3 +859,40 @@
   - repeated buffer allocation/copy/no-copy setup between `nn_metal_benchmark_logits_matmul_persistent` and `nn_metal_benchmark_logits_matmul_persistent_batched`;
   - repeated threadgroup/grid sizing checks;
   - avoid changing the dispatch loops themselves except to call helpers.
+
+## 2026-06-10 Resumed ultragoal G075 — shared Metal logits benchmark dispatch helpers
+- Implemented the smallest cleanup from the G075 plan: extracted common logits dispatch sizing, repeated dispatch encoding, and benchmark result filling in `src/metal_bridge.m`.
+- Scope deliberately stayed narrow:
+  - one-shot `nn_metal_run_logits_matmul`, default persistent `per_iter`, and opt-in persistent `batched` now share `nn_make_logits_dispatch_config` and `nn_encode_logits_dispatches`;
+  - persistent result population now shares `nn_fill_benchmark_result`;
+  - no public C ABI, CLI default, no-copy path, selected-kernel logic, top-k comparison, or HF bridge code changed.
+- Targeted validation commands:
+  - `python3 -m py_compile scripts/benchmark_metal_logits.py scripts/benchmark_metal_logits_matrix.py scripts/benchmark_metal_logits_reuse.py scripts/run_alignment_tests.py`
+  - `zig fmt --check src/metal_logits_test.zig`
+  - `zig build -Denable-metal=true`
+  - `zig build -Denable-metal=true metal-lib`
+  - Direct per-iteration regression: `./zig-out/bin/metal_logits_v1 zig-out/metal/kernels.metallib --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk --buffer-mode nocopy --kernel-repeats 5 --benchmark-iters 10 --benchmark-command-mode per_iter --matrix-kernels scalar,threadgroup > artifacts/benchmarks/g075_cleanup/control_reuse.ndjson`
+  - Direct batched regression: `./zig-out/bin/metal_logits_v1 zig-out/metal/kernels.metallib --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk --buffer-mode nocopy --kernel-repeats 5 --benchmark-iters 10 --benchmark-command-mode batched --matrix-kernels scalar,threadgroup > artifacts/benchmarks/g075_cleanup/batched_reuse.ndjson`
+  - Wrapper batched sample sanity: `uv run python scripts/benchmark_metal_logits_reuse.py --no-build --samples 2 --kernel-repeats 5 --benchmark-iters 10 --benchmark-command-mode batched --kernels scalar,threadgroup --buffer-mode nocopy --out artifacts/benchmarks/g075_cleanup/batched_reuse_samples2.json`
+  - Wrapper per-iteration sample sanity: `uv run python scripts/benchmark_metal_logits_reuse.py --no-build --samples 2 --kernel-repeats 5 --benchmark-iters 10 --benchmark-command-mode per_iter --kernels scalar,threadgroup --buffer-mode nocopy --out artifacts/benchmarks/g075_cleanup/control_reuse_samples2.json`
+  - Existing persistent matrix control: `uv run python scripts/benchmark_metal_logits_matrix.py --no-build --persistent-only --warmup 0 --repeats 0 --cpu-repeats 1 --kernel-repeats 5 --persistent-iters 10 --persistent-samples 2 --kernels scalar,threadgroup --buffer-modes nocopy --out artifacts/benchmarks/g075_cleanup/control_persistent_matrix.json --artifact-dir artifacts/benchmarks/g075_cleanup/control_persistent_runs`
+- Targeted validation results:
+  - Direct `per_iter` and `batched` NDJSON invariants passed with scalar/threadgroup rows, `actual_kernel` matching requested kernels, `actual_buffer_mode=nocopy`, `used_no_copy_buffers=true`, expected/actual top-1 `353`, top-1/top-20 matches true, mismatches `0`, per-row fixture load `0`, and positive finite persistent timings.
+  - Wrapper sample sanity passed for both `benchmark_command_mode=batched` and `benchmark_command_mode=per_iter`; every sample had no failure reasons, `persistent_command_mode` matching the requested mode, top-k pass, and mismatches `0`.
+  - Existing persistent matrix control passed with `persistent_samples=2`, `persistent_iters=10`, scalar/threadgroup ranking rows present, no-copy evidence true, top-k pass, and `persistent_command_mode=per_iter`.
+  - While writing ad hoc assertions, two schema-assumption checks failed (`event` vs `matrix` envelope fields and `command_mode` vs `settings.benchmark_command_mode`); these were test-harness assertion mistakes only. The checks were corrected to the current artifact schema and then passed.
+- Full verification commands:
+  - `zig build`
+  - `zig build -Dtarget=x86_64-linux --summary all`
+  - `zig build -Denable-metal=true metal-smoke`
+  - `zig build -Denable-metal=true metal-logits-test -- --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk --kernel-repeats 2`
+  - `uv run python scripts/run_alignment_tests.py`
+- Full verification results:
+  - Linux cross build succeeded.
+  - Metal smoke reported mismatches `0`.
+  - Full-vocab Metal logits fixture retained `top1_match=true`, `top20_set_match=true`, expected/actual top-1 `353`, and mismatches `0`.
+  - HF bridge alignment remained intact for all three required prompts with max absolute logit diff `0.0`; sampling smoke remained `temperature=0.6`, `top_p=0.95`, `top_k=20`, candidate count `20`, selected token `353`.
+- Review:
+  - Code-reviewer subagent APPROVED the current diff after checking behavior preservation for one-shot dispatch, per-iteration persistent benchmark, batched persistent benchmark, no-copy semantics, threadgroup error codes, command-mode reporting, and benchmark semantics.
+- Decision: keep the cleanup. It reduces dispatch/result duplication without changing benchmark modes or runtime defaults.
+- Next optimization target: run a deliberate follow-on benchmark comparison/reporting pass that separates `per_iter` and `batched` command-mode semantics, then decide whether the next implementation should target command-buffer overhead, host compare/top-k overhead, or kernel/layout work.

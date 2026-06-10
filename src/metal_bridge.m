@@ -52,6 +52,76 @@ static bool nn_logits_kernel_is_threadgroup(const char *kernel_name) {
     return strcmp(kernel_name, "logits_matmul_tg") == 0;
 }
 
+typedef struct NnLogitsDispatchConfig {
+    NSUInteger threads_per_group;
+    MTLSize threadgroup_size;
+    MTLSize grid_size;
+    bool threadgroup_kernel;
+} NnLogitsDispatchConfig;
+
+static int nn_make_logits_dispatch_config(
+    id<MTLComputePipelineState> pipeline,
+    bool threadgroup_kernel,
+    uint32_t rows,
+    NnLogitsDispatchConfig *out_config,
+    char *err,
+    size_t err_len,
+    int threadgroup_error_code
+) {
+    NSUInteger threads_per_group = [pipeline maxTotalThreadsPerThreadgroup];
+    if (threads_per_group > 256) threads_per_group = 256;
+    if (threads_per_group == 0) threads_per_group = 1;
+    if (threadgroup_kernel && threads_per_group < 256) {
+        nn_set_error(err, err_len, "logits_matmul_tg requires at least 256 threads per threadgroup");
+        return threadgroup_error_code;
+    }
+    if (threads_per_group > rows) threads_per_group = rows;
+    if (threadgroup_kernel) threads_per_group = 256;
+
+    out_config->threads_per_group = threads_per_group;
+    out_config->threadgroup_size = MTLSizeMake(threads_per_group, 1, 1);
+    out_config->grid_size = MTLSizeMake(rows, 1, 1);
+    out_config->threadgroup_kernel = threadgroup_kernel;
+    return 0;
+}
+
+static void nn_encode_logits_dispatches(
+    id<MTLComputeCommandEncoder> encoder,
+    const NnLogitsDispatchConfig *config,
+    uint32_t rows,
+    uint32_t repeat_count
+) {
+    for (uint32_t repeat = 0; repeat < repeat_count; repeat += 1) {
+        if (config->threadgroup_kernel) {
+            [encoder dispatchThreadgroups:MTLSizeMake(rows, 1, 1) threadsPerThreadgroup:config->threadgroup_size];
+        } else if ([encoder respondsToSelector:@selector(dispatchThreads:threadsPerThreadgroup:)]) {
+            [encoder dispatchThreads:config->grid_size threadsPerThreadgroup:config->threadgroup_size];
+        } else {
+            const NSUInteger group_count = ((NSUInteger)rows + config->threads_per_group - 1) / config->threads_per_group;
+            [encoder dispatchThreadgroups:MTLSizeMake(group_count, 1, 1) threadsPerThreadgroup:config->threadgroup_size];
+        }
+    }
+}
+
+static void nn_fill_benchmark_result(
+    NnMetalBenchmarkResult *out_benchmark,
+    uint32_t iterations,
+    uint32_t repeat_count,
+    double setup_ms,
+    double elapsed_ms,
+    const char *command_mode
+) {
+    if (out_benchmark == NULL) return;
+    memset(out_benchmark, 0, sizeof(*out_benchmark));
+    out_benchmark->iterations = iterations;
+    out_benchmark->repeat_count = repeat_count;
+    out_benchmark->setup_ms = setup_ms;
+    out_benchmark->elapsed_ms = elapsed_ms;
+    out_benchmark->elapsed_ms_per_iteration = elapsed_ms / (double)iterations;
+    out_benchmark->elapsed_ms_per_kernel_repeat = elapsed_ms / (double)((uint64_t)iterations * (uint64_t)repeat_count);
+    snprintf(out_benchmark->command_mode, sizeof(out_benchmark->command_mode), "%s", command_mode);
+}
+
 static const char *nn_logits_kernel_label(const char *kernel_name) {
     if (nn_logits_kernel_is_threadgroup(kernel_name)) return "threadgroup";
     return "scalar";
@@ -331,29 +401,12 @@ int nn_metal_run_logits_matmul(
         [encoder setBuffer:logits_buffer offset:0 atIndex:2];
         [encoder setBuffer:dims_buffer offset:0 atIndex:3];
 
-        NSUInteger threads_per_group = [pipeline maxTotalThreadsPerThreadgroup];
-        if (threads_per_group > 256) threads_per_group = 256;
-        if (threads_per_group == 0) threads_per_group = 1;
-        if (threadgroup_kernel && threads_per_group < 256) {
-            nn_set_error(err, err_len, "logits_matmul_tg requires at least 256 threads per threadgroup");
-            return 28;
-        }
-        if (threads_per_group > rows) threads_per_group = rows;
-        if (threadgroup_kernel) threads_per_group = 256;
-        MTLSize threadgroup_size = MTLSizeMake(threads_per_group, 1, 1);
-        MTLSize grid_size = MTLSizeMake(rows, 1, 1);
+        NnLogitsDispatchConfig dispatch_config;
+        int dispatch_rc = nn_make_logits_dispatch_config(pipeline, threadgroup_kernel, rows, &dispatch_config, err, err_len, 28);
+        if (dispatch_rc != 0) return dispatch_rc;
 
         CFAbsoluteTime start_time = CFAbsoluteTimeGetCurrent();
-        for (uint32_t repeat = 0; repeat < repeat_count; repeat += 1) {
-            if (threadgroup_kernel) {
-                [encoder dispatchThreadgroups:MTLSizeMake(rows, 1, 1) threadsPerThreadgroup:threadgroup_size];
-            } else if ([encoder respondsToSelector:@selector(dispatchThreads:threadsPerThreadgroup:)]) {
-                [encoder dispatchThreads:grid_size threadsPerThreadgroup:threadgroup_size];
-            } else {
-                const NSUInteger group_count = ((NSUInteger)rows + threads_per_group - 1) / threads_per_group;
-                [encoder dispatchThreadgroups:MTLSizeMake(group_count, 1, 1) threadsPerThreadgroup:threadgroup_size];
-            }
-        }
+        nn_encode_logits_dispatches(encoder, &dispatch_config, rows, repeat_count);
         [encoder endEncoding];
         [command_buffer commit];
         [command_buffer waitUntilCompleted];
@@ -465,17 +518,9 @@ int nn_metal_benchmark_logits_matmul_persistent(
             return 36;
         }
 
-        NSUInteger threads_per_group = [pipeline maxTotalThreadsPerThreadgroup];
-        if (threads_per_group > 256) threads_per_group = 256;
-        if (threads_per_group == 0) threads_per_group = 1;
-        if (threadgroup_kernel && threads_per_group < 256) {
-            nn_set_error(err, err_len, "logits_matmul_tg requires at least 256 threads per threadgroup");
-            return 39;
-        }
-        if (threads_per_group > rows) threads_per_group = rows;
-        if (threadgroup_kernel) threads_per_group = 256;
-        MTLSize threadgroup_size = MTLSizeMake(threads_per_group, 1, 1);
-        MTLSize grid_size = MTLSizeMake(rows, 1, 1);
+        NnLogitsDispatchConfig dispatch_config;
+        int dispatch_rc = nn_make_logits_dispatch_config(pipeline, threadgroup_kernel, rows, &dispatch_config, err, err_len, 39);
+        if (dispatch_rc != 0) return dispatch_rc;
         CFAbsoluteTime setup_end = CFAbsoluteTimeGetCurrent();
 
         CFAbsoluteTime loop_start = CFAbsoluteTimeGetCurrent();
@@ -493,16 +538,7 @@ int nn_metal_benchmark_logits_matmul_persistent(
             [encoder setBuffer:logits_buffer offset:0 atIndex:2];
             [encoder setBuffer:dims_buffer offset:0 atIndex:3];
 
-            for (uint32_t repeat = 0; repeat < repeat_count; repeat += 1) {
-                if (threadgroup_kernel) {
-                    [encoder dispatchThreadgroups:MTLSizeMake(rows, 1, 1) threadsPerThreadgroup:threadgroup_size];
-                } else if ([encoder respondsToSelector:@selector(dispatchThreads:threadsPerThreadgroup:)]) {
-                    [encoder dispatchThreads:grid_size threadsPerThreadgroup:threadgroup_size];
-                } else {
-                    const NSUInteger group_count = ((NSUInteger)rows + threads_per_group - 1) / threads_per_group;
-                    [encoder dispatchThreadgroups:MTLSizeMake(group_count, 1, 1) threadsPerThreadgroup:threadgroup_size];
-                }
-            }
+            nn_encode_logits_dispatches(encoder, &dispatch_config, rows, repeat_count);
             [encoder endEncoding];
             [command_buffer commit];
             [command_buffer waitUntilCompleted];
@@ -523,16 +559,7 @@ int nn_metal_benchmark_logits_matmul_persistent(
             out_result->used_no_copy_buffers = used_no_copy ? 1 : 0;
             nn_fill_actual_kernel(out_result, selected_kernel);
         }
-        if (out_benchmark != NULL) {
-            memset(out_benchmark, 0, sizeof(*out_benchmark));
-            out_benchmark->iterations = iterations;
-            out_benchmark->repeat_count = repeat_count;
-            out_benchmark->setup_ms = setup_ms;
-            out_benchmark->elapsed_ms = elapsed_ms;
-            out_benchmark->elapsed_ms_per_iteration = elapsed_ms / (double)iterations;
-            out_benchmark->elapsed_ms_per_kernel_repeat = elapsed_ms / (double)((uint64_t)iterations * (uint64_t)repeat_count);
-            snprintf(out_benchmark->command_mode, sizeof(out_benchmark->command_mode), "%s", "per_iter");
-        }
+        nn_fill_benchmark_result(out_benchmark, iterations, repeat_count, setup_ms, elapsed_ms, "per_iter");
         return 0;
     }
 }
@@ -626,17 +653,9 @@ int nn_metal_benchmark_logits_matmul_persistent_batched(
             return 46;
         }
 
-        NSUInteger threads_per_group = [pipeline maxTotalThreadsPerThreadgroup];
-        if (threads_per_group > 256) threads_per_group = 256;
-        if (threads_per_group == 0) threads_per_group = 1;
-        if (threadgroup_kernel && threads_per_group < 256) {
-            nn_set_error(err, err_len, "logits_matmul_tg requires at least 256 threads per threadgroup");
-            return 49;
-        }
-        if (threads_per_group > rows) threads_per_group = rows;
-        if (threadgroup_kernel) threads_per_group = 256;
-        MTLSize threadgroup_size = MTLSizeMake(threads_per_group, 1, 1);
-        MTLSize grid_size = MTLSizeMake(rows, 1, 1);
+        NnLogitsDispatchConfig dispatch_config;
+        int dispatch_rc = nn_make_logits_dispatch_config(pipeline, threadgroup_kernel, rows, &dispatch_config, err, err_len, 49);
+        if (dispatch_rc != 0) return dispatch_rc;
         CFAbsoluteTime setup_end = CFAbsoluteTimeGetCurrent();
 
         CFAbsoluteTime loop_start = CFAbsoluteTimeGetCurrent();
@@ -654,16 +673,7 @@ int nn_metal_benchmark_logits_matmul_persistent_batched(
         [encoder setBuffer:dims_buffer offset:0 atIndex:3];
 
         for (uint32_t iteration = 0; iteration < iterations; iteration += 1) {
-            for (uint32_t repeat = 0; repeat < repeat_count; repeat += 1) {
-                if (threadgroup_kernel) {
-                    [encoder dispatchThreadgroups:MTLSizeMake(rows, 1, 1) threadsPerThreadgroup:threadgroup_size];
-                } else if ([encoder respondsToSelector:@selector(dispatchThreads:threadsPerThreadgroup:)]) {
-                    [encoder dispatchThreads:grid_size threadsPerThreadgroup:threadgroup_size];
-                } else {
-                    const NSUInteger group_count = ((NSUInteger)rows + threads_per_group - 1) / threads_per_group;
-                    [encoder dispatchThreadgroups:MTLSizeMake(group_count, 1, 1) threadsPerThreadgroup:threadgroup_size];
-                }
-            }
+            nn_encode_logits_dispatches(encoder, &dispatch_config, rows, repeat_count);
         }
         [encoder endEncoding];
         [command_buffer commit];
@@ -684,16 +694,7 @@ int nn_metal_benchmark_logits_matmul_persistent_batched(
             out_result->used_no_copy_buffers = used_no_copy ? 1 : 0;
             nn_fill_actual_kernel(out_result, selected_kernel);
         }
-        if (out_benchmark != NULL) {
-            memset(out_benchmark, 0, sizeof(*out_benchmark));
-            out_benchmark->iterations = iterations;
-            out_benchmark->repeat_count = repeat_count;
-            out_benchmark->setup_ms = setup_ms;
-            out_benchmark->elapsed_ms = elapsed_ms;
-            out_benchmark->elapsed_ms_per_iteration = elapsed_ms / (double)iterations;
-            out_benchmark->elapsed_ms_per_kernel_repeat = elapsed_ms / (double)((uint64_t)iterations * (uint64_t)repeat_count);
-            snprintf(out_benchmark->command_mode, sizeof(out_benchmark->command_mode), "%s", "batched");
-        }
+        nn_fill_benchmark_result(out_benchmark, iterations, repeat_count, setup_ms, elapsed_ms, "batched");
         return 0;
     }
 }
