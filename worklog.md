@@ -288,3 +288,35 @@
   - `./zig-out/bin/metal_logits_v1 zig-out/metal/kernels.metallib --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk --kernel scalar --buffer-mode nocopy --kernel-repeats 2`
   - `uv run python scripts/run_alignment_tests.py`
 - Next optimization target: run a no-copy-first defaulting experiment or a higher-repeat scalar/threadgroup matrix before promoting any default behavior; keep copy-backed mode as the rollback path.
+
+## 2026-06-10 Resumed ultragoal G058 — no-copy default validation rejected; strict opt-in retained
+- Tested a no-copy-first defaulting hypothesis after G057 showed a clear opt-in no-copy win. A temporary local default change made no-flag `metal_logits_v1` and no-flag `benchmark_metal_logits.py` use `nocopy`; default correctness and benchmark metrics matched explicit no-copy.
+- Independent review found a real promotion blocker: the G057 no-copy request could silently fall back to copy-backed buffers, so a default promotion could pass correctness and benchmark gates while not actually exercising no-copy. It also noted lifetime/alignment documentation gaps for `newBufferWithBytesNoCopy`.
+- Decision: do **not** promote no-copy to the default yet. Reverted the temporary default change so `copy` remains the no-flag CLI/benchmark behavior and explicit rollback baseline. Kept no-copy as an opt-in throughput experiment.
+- Hardened the opt-in no-copy contract instead:
+  - `nn_metal_run_logits_matmul` and persistent benchmark mode now fail if `use_no_copy_buffers` is requested but any no-copy Metal buffer cannot be created, rather than silently falling back to copy-backed buffers.
+  - Moved no-copy output zeroing after successful buffer creation, avoiding output clobber on setup failure.
+  - Documented the synchronous host-memory lifetime contract in `src/metal_bridge.h`.
+  - Added `actual_buffer_mode` to `metal_logits_v1` JSON.
+  - Added benchmark report fields `requested_buffer_mode`, `actual_used_no_copy_count`, `actual_used_no_copy_all`, and `persistent_actual_used_no_copy`; the benchmark script now exits nonzero if `--buffer-mode nocopy` was requested but any measured run did not actually use no-copy buffers.
+- Correctness and benchmark evidence:
+  - Default no-flag full-vocab scalar remains copy-backed and correct: `buffer_mode=copy`, `actual_buffer_mode=copy`, `used_no_copy_buffers=false`, top-1 `353`, top-20 set match `true`, `mismatches=0`.
+  - Strict no-copy full-vocab scalar remains correct: `buffer_mode=nocopy`, `actual_buffer_mode=nocopy`, `used_no_copy_buffers=true`, top-1 `353`, top-20 set match `true`, `mismatches=0`.
+  - Persistent strict no-copy check remained correct with `persistent_ms_per_kernel_repeat=13.100 ms` in the direct CLI sample.
+  - Strict benchmark comparison:
+    - Copy (`artifacts/benchmarks/g058_copy_strict.json`): measured total mean `582.781 ms`, bridge wall mean `199.747 ms`, wall mean `852.367 ms`, persistent per-kernel-repeat `13.016 ms`.
+    - No-copy (`artifacts/benchmarks/g058_nocopy_strict.json`): measured total mean `473.286 ms`, bridge wall mean `87.373 ms`, wall mean `737.882 ms`, persistent per-kernel-repeat `12.839 ms`, `actual_used_no_copy_all=true`, `persistent_actual_used_no_copy=true`.
+  - HF bridge alignment still passed for `"Hi,"`, `"The capital of China is"`, and `"What is 1+1?"` with max absolute logit diff `0.0`; sampling smoke defaults remain `temperature=0.6`, `top_p=0.95`, `top_k=20`.
+- Verification commands run:
+  - `python3 -m py_compile scripts/benchmark_metal_logits.py`
+  - `zig fmt src/metal_logits_test.zig`
+  - `zig build -Denable-metal=true`
+  - `./zig-out/bin/metal_logits_v1 zig-out/metal/kernels.metallib --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk --kernel scalar --kernel-repeats 2`
+  - `./zig-out/bin/metal_logits_v1 zig-out/metal/kernels.metallib --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk --kernel scalar --buffer-mode nocopy --kernel-repeats 2`
+  - `./zig-out/bin/metal_logits_v1 zig-out/metal/kernels.metallib --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk --kernel scalar --buffer-mode nocopy --kernel-repeats 5 --benchmark-iters 3`
+  - `uv run python scripts/benchmark_metal_logits.py --warmup 1 --repeats 2 --cpu-repeats 1 --kernel scalar --buffer-mode copy --kernel-repeats 5 --persistent-iters 3 --out artifacts/benchmarks/g058_copy_strict.json`
+  - `uv run python scripts/benchmark_metal_logits.py --warmup 1 --repeats 2 --cpu-repeats 1 --kernel scalar --buffer-mode nocopy --kernel-repeats 5 --persistent-iters 3 --out artifacts/benchmarks/g058_nocopy_strict.json`
+  - `zig build`
+  - `zig build -Dtarget=x86_64-linux --summary all`
+  - `uv run python scripts/run_alignment_tests.py`
+- Next optimization target: continue from strict opt-in no-copy and compare kernel variants under this cleaner measurement contract; do not default no-copy until alignment/ownership requirements are made portable or explicitly page-aligned.

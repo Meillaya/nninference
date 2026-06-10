@@ -235,13 +235,16 @@ int nn_metal_run_logits_matmul(
         id<MTLBuffer> logits_buffer = nil;
         bool used_no_copy = false;
         if (use_no_copy_buffers) {
-            memset(logits_out, 0, logits_bytes);
             hidden_buffer = [device newBufferWithBytesNoCopy:(void *)hidden length:hidden_bytes options:MTLResourceStorageModeShared deallocator:nil];
             weights_buffer = [device newBufferWithBytesNoCopy:(void *)weights_row_major length:weight_bytes options:MTLResourceStorageModeShared deallocator:nil];
             logits_buffer = [device newBufferWithBytesNoCopy:(void *)logits_out length:logits_bytes options:MTLResourceStorageModeShared deallocator:nil];
             used_no_copy = hidden_buffer != nil && weights_buffer != nil && logits_buffer != nil;
-        }
-        if (!used_no_copy) {
+            if (!used_no_copy) {
+                nn_set_error(err, err_len, "failed to allocate requested no-copy Metal buffers");
+                return 25;
+            }
+            memset(logits_out, 0, logits_bytes);
+        } else {
             hidden_buffer = [device newBufferWithLength:hidden_bytes options:MTLResourceStorageModeShared];
             weights_buffer = [device newBufferWithLength:weight_bytes options:MTLResourceStorageModeShared];
             logits_buffer = [device newBufferWithLength:logits_bytes options:MTLResourceStorageModeShared];
@@ -381,13 +384,16 @@ int nn_metal_benchmark_logits_matmul_persistent(
         id<MTLBuffer> logits_buffer = nil;
         bool used_no_copy = false;
         if (use_no_copy_buffers) {
-            memset(logits_out, 0, logits_bytes);
             hidden_buffer = [device newBufferWithBytesNoCopy:(void *)hidden length:hidden_bytes options:MTLResourceStorageModeShared deallocator:nil];
             weights_buffer = [device newBufferWithBytesNoCopy:(void *)weights_row_major length:weight_bytes options:MTLResourceStorageModeShared deallocator:nil];
             logits_buffer = [device newBufferWithBytesNoCopy:(void *)logits_out length:logits_bytes options:MTLResourceStorageModeShared deallocator:nil];
             used_no_copy = hidden_buffer != nil && weights_buffer != nil && logits_buffer != nil;
-        }
-        if (!used_no_copy) {
+            if (!used_no_copy) {
+                nn_set_error(err, err_len, "failed to allocate requested no-copy Metal buffers");
+                return 35;
+            }
+            memset(logits_out, 0, logits_bytes);
+        } else {
             hidden_buffer = [device newBufferWithLength:hidden_bytes options:MTLResourceStorageModeShared];
             weights_buffer = [device newBufferWithLength:weight_bytes options:MTLResourceStorageModeShared];
             logits_buffer = [device newBufferWithLength:logits_bytes options:MTLResourceStorageModeShared];

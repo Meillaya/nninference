@@ -47,6 +47,11 @@ int nn_metal_run_vector_add(
 );
 
 
+// When use_no_copy_buffers is nonzero, the bridge wraps caller-owned host buffers
+// with synchronous no-copy MTLBuffers and fails if Metal cannot honor that request.
+// The hidden, weights_row_major, and logits_out memory must remain valid and
+// unmodified until this function returns; the bridge waits for GPU completion
+// before returning. Pass zero to use the copy-backed shared-buffer path.
 int nn_metal_run_logits_matmul(
     const char *metallib_path,
     const char *kernel_name,
@@ -63,6 +68,9 @@ int nn_metal_run_logits_matmul(
     size_t err_len
 );
 
+// Same no-copy lifetime rules as nn_metal_run_logits_matmul; persistent here
+// means repeated command-buffer submission inside one synchronous call, not an
+// asynchronous retained buffer API.
 int nn_metal_benchmark_logits_matmul_persistent(
     const char *metallib_path,
     const char *kernel_name,

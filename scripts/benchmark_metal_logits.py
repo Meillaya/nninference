@@ -171,7 +171,14 @@ def main() -> None:
     host_compare_ms = [float(record["host_compare_ms"]) for record in records if "host_compare_ms" in record]
     measured_total_ms = [float(record["total_cli_measured_ms"]) for record in records if "total_cli_measured_ms" in record]
     cpu = run_cpu_fixture(fixture, args.cpu_repeats)
+    if args.buffer_mode == "nocopy":
+        failed = [record for record in records if not record.get("used_no_copy_buffers", False)]
+        persistent_failed = persistent is not None and not persistent[1].get("used_no_copy_buffers", False)
+        if failed or persistent_failed:
+            raise SystemExit("requested --buffer-mode nocopy but at least one Metal run did not use no-copy buffers")
     host_overhead = [wall - kernel for wall, kernel in zip(metal_wall, metal_kernel)]
+    no_copy_count = sum(1 for record in records if record.get("used_no_copy_buffers", False))
+    persistent_used_no_copy = None if persistent is None else bool(persistent[1].get("used_no_copy_buffers", False))
 
     report = {
         "fixture": str(fixture),
@@ -181,7 +188,11 @@ def main() -> None:
         "metal_cli": args.cli,
         "metallib": args.metallib,
         "kernel": args.kernel,
+        "requested_buffer_mode": args.buffer_mode,
         "buffer_mode": args.buffer_mode,
+        "actual_used_no_copy_count": no_copy_count,
+        "actual_used_no_copy_all": no_copy_count == len(records),
+        "persistent_actual_used_no_copy": persistent_used_no_copy,
         "metal_wall_ms": summarize(metal_wall),
         "kernel_repeats_per_cli_run": args.kernel_repeats,
         "metal_command_buffer_total_ms": summarize(metal_kernel),
