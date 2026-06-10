@@ -1,7 +1,18 @@
 # Python / uv
 .venv/
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local environment / secrets
+.env
+.env.*
+!.env.example
 
 # Local OMX runtime state
 .omx/
@@ -16,3 +27,11 @@ zig-cache/
 # Large tensors / generated binaries
 *.safetensors
 *.bin
+
+# Logs / temporary files
+*.log
+*.tmp
+*.temp
+*.bak
+.DS_Store
+Thumbs.db

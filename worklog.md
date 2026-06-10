@@ -1314,3 +1314,35 @@
   - Architect found the session lifetime/API direction internally consistent but blocked on the reuse wrapper exposing `session` while still defaulting to `nocopy`; fixed with an explicit preflight rejection.
   - Code-reviewer then requested two fixes: normalize `repeat_count == 0` inside `nn_metal_logits_session_benchmark` before filling benchmark metrics, and add this G086 worklog entry. Both were fixed before commit.
 - Decision: keep the retained row-major session as an opt-in benchmark-only Gate A probe. It does not meet any promotion claim yet and does not replace per_iter/batched defaults. The next safe direction, if work resumes later, is a measured medium-sample comparison of session/copy against per_iter and batched copy controls, or rollback if the additional session path proves too much complexity for its measurement value.
+
+## 2026-06-10 Follow-up — Kimi-style local benchmark consolidation and repo hygiene
+- Goal: produce Kimi-blog-inspired graphs and critical comparisons while avoiding apples-to-oranges claims, then tidy repository hygiene.
+- Cleanup plan before repo-hygiene edits:
+  - Preserve behavior and benchmark evidence; do not change Zig/Metal/Python inference code paths.
+  - Prefer ignore-rule expansion and generated-cache deletion over moving or rewriting project files.
+  - Keep generated reports reproducible from local JSON artifacts instead of committing ignored output.
+- Added `scripts/consolidate_benchmark_findings.py`, a dependency-free report generator that reads existing local benchmark JSON and writes ignored artifacts under `artifacts/findings/kimi_style_local/`:
+  - `report.md`
+  - `consolidated_findings.json`
+  - `charts/cli_time_by_milestone.svg`
+  - `charts/cli_speedup_vs_g054.svg`
+  - `charts/persistent_kernel_timing.svg`
+  - `charts/persistent_speedup_vs_g054.svg`
+  - `charts/fixture_load_ms.svg`
+- Critical comparison guardrail: the Kimi K2.6 post is used only as reporting/graph inspiration. Its reported end-to-end token/s case is not the same metric as this repo's HF bridge plus Metal LM-head logits sidecar, so the report labels local numbers as sidecar engineering progress only.
+- Consolidated findings from existing artifacts:
+  - Local one-shot sidecar measured total improved from `2127.36 ms` in G054 to `475.90 ms` in the best included strict no-copy artifact, about `4.47x` lower latency for that sidecar metric.
+  - Persistent LM-head timing improved from `13.10 ms/repeat` in the early scalar/copy persistent artifact to `10.59 ms/repeat` in the best retained G080/G084 command-mode evidence, about `1.24x` lower.
+  - Fixture loading fell by about `81.58%` from G054 to G056, confirming data movement/load overhead was the largest early win.
+  - G086 retained session remains a correct opt-in boundary probe, not a promoted throughput path.
+- Repo hygiene:
+  - Expanded `.gitignore` for Python caches, pytest/mypy/ruff/coverage outputs, local env files, logs, temp files, and OS metadata while preserving existing ignored model/artifact/build outputs.
+  - Removed generated `scripts/__pycache__/` from the working tree.
+- Review fixes before commit:
+  - Removed unused helper code from the report generator.
+  - Made chart listing deterministic and cleared stale generated SVGs in the ignored report chart directory before regenerating.
+  - Softened an untraceable per-milestone kernel plateau sentence so claims stay anchored to the generated G084 regression summary.
+- Verification:
+  - `python3 scripts/consolidate_benchmark_findings.py`
+  - `python3 -m py_compile scripts/consolidate_benchmark_findings.py`
+  - `git status --short --ignored` confirmed generated model/artifact/build/cache directories remain ignored.
