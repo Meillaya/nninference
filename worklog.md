@@ -1458,3 +1458,32 @@
   - The chart surfaces are now contractually present but still dry-run placeholders until a long optimization pass collects measured time series/distribution/waterfall data.
   - LM Studio remains an optional local comparator; no live LM Studio generation benchmark was run in this blocker-closure pass.
   - The harness is production-grade for auditable smoke/correctness lifecycle execution, but real autonomous optimization edits over 3h/6h/9h/12h budgets are a future execution milestone.
+
+## 2026-06-10 Follow-up — LM Studio live endpoint benchmark
+- Goal: run a live LM Studio benchmark against the user-provided local endpoint `http://127.0.0.1:1234` with the currently loaded `qwen3.5-0.8b` model.
+- Discovery:
+  - `curl -sS -i --max-time 5 http://127.0.0.1:1234/v1/models` returned HTTP 200 and listed `qwen3.5-0.8b`, `google/gemma-4-e4b`, and `text-embedding-nomic-embed-text-v1.5`.
+  - `/v1/chat/completions` accepted `qwen3.5-0.8b` with OpenAI-compatible request shape.
+  - Streaming with `stream_options.include_usage=true` returned SSE chunks plus usage counts, allowing TTFT and token/sec measurement.
+- Benchmark method:
+  - Endpoint: `http://127.0.0.1:1234/v1/chat/completions`.
+  - Model: `qwen3.5-0.8b`.
+  - Prompts: `Hi,`, `The capital of China is`, `What is 1+1?`.
+  - Generation settings: `temperature=0`, `max_tokens=64`, streaming enabled.
+  - Samples: one warmup per prompt, seven measured repeats per prompt.
+  - TTFT measured as time to first content SSE chunk.
+  - Tokens/sec after TTFT computed as `(completion_tokens - 1) / (total_seconds - ttft_seconds)` using LM Studio usage counts.
+- Artifacts:
+  - `artifacts/benchmarks/lmstudio-live-20260610T232837Z/lmstudio_live_benchmark.json`
+  - `artifacts/benchmarks/lmstudio-live-20260610T232837Z/report.md`
+  - `artifacts/benchmarks/latest_lmstudio_live.txt`
+- Results:
+  - Overall measured samples: `21`.
+  - Overall median TTFT: `0.0946s`.
+  - Overall median tokens/sec after TTFT: `91.83`.
+  - Prompt `Hi,`: median TTFT `0.1173s`, median total latency `0.1885s`, median tokens/sec after TTFT `173.86`, median completion tokens `12`.
+  - Prompt `The capital of China is`: median TTFT `0.0863s`, median total latency `0.4068s`, median tokens/sec after TTFT `91.83`, median completion tokens `29`.
+  - Prompt `What is 1+1?`: median TTFT `0.0700s`, median total latency `0.8513s`, median tokens/sec after TTFT `80.59`, median completion tokens `64`.
+- Claim boundary:
+  - This is a local LM Studio live endpoint measurement only. It is not directly comparable to repo HF bridge or Metal sidecar numbers without matched prompt formatting, chat template, generation length, and sampling settings.
+  - The third prompt hit the `max_tokens=64` cap, so its latency/token rate is a capped-generation measurement, not a natural stop measurement.
