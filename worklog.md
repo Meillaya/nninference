@@ -1221,3 +1221,40 @@
   - Rolled back all source/script changes with `git restore metal/vector_add.metal src/metal_bridge.m src/metal_logits_test.zig scripts/benchmark_metal_logits.py scripts/benchmark_metal_logits_matrix.py scripts/benchmark_metal_logits_reuse.py`.
   - No kernel/default behavior changed. The milestone outcome is a documented no-change rollback.
 - Next direction: row-pair hidden reuse did not beat existing row-per-threadgroup kernels, so further LM-head kernel work should likely stop unless a qualitatively different layout/tile design is justified. Next safe iteration should shift to measurement/reporting, integration boundaries, or another measured bottleneck rather than adding more near-duplicate kernels.
+
+## 2026-06-10 Resumed ultragoal G084 — Added Metal benchmark regression summary
+- Goal: pivot after G083 from near-duplicate LM-head kernel experiments to measurement/reporting. The new utility summarizes existing G080-G083 Metal command-mode benchmark artifacts, validates the retained correctness evidence, and emits JSON/Markdown regression artifacts without changing runtime defaults.
+- Implemented changes:
+  - Added `scripts/summarize_metal_benchmarks.py`.
+  - Default inputs are the existing medium-sample command-mode artifacts:
+    - `artifacts/benchmarks/g080_post_topk_command/command_modes_full_samples7.json`
+    - `artifacts/benchmarks/g081_tg128/command_modes_full_samples7.json`
+    - `artifacts/benchmarks/g082_tg128x4/command_modes_full_samples7.json`
+    - `artifacts/benchmarks/g083_tg128r2/command_modes_full_samples7.json`
+  - The script validates `verdict=pass`, empty `failure_reasons`, `compare_mode=full`, per-mode rankings, nested sample top-1/top-20 evidence, full-compare execution, and zero mismatches where full comparison rows are present.
+  - It emits ignored local artifacts under `artifacts/benchmarks/g084_regression_summary/summary.json` and `summary.md`.
+- Regression-summary evidence:
+  - `uv run python scripts/summarize_metal_benchmarks.py` passed with `verdict=pass` and no failure reasons.
+  - Best recorded winner across the summarized artifacts remained `threadgroup/nocopy` from G080 in both command modes: `10.596840381622314 ms/kernel-repeat` per-iter and `10.594501495361328 ms/kernel-repeat` batched.
+  - G083 row-pair candidate remained rejected by the summary: `threadgroup128r2` was `+0.75%` versus the best retained per-iter baseline and `+1.47%` versus the best retained batched baseline.
+  - G082 `threadgroup128x4` remained below keep threshold: `-0.22%` versus best retained per-iter baseline but `+2.23%` slower than best retained batched baseline.
+  - Conclusion recorded by the generated Markdown: keep scalar/threadgroup/threadgroup128 as comparison baselines and shift away from near-duplicate LM-head reductions toward benchmark integration, dispatch/readback overhead, or a qualitatively different prepacked/tiled layout hypothesis.
+- Correctness and default-preservation evidence:
+  - `python3 -m py_compile scripts/summarize_metal_benchmarks.py scripts/benchmark_metal_command_modes.py scripts/benchmark_metal_logits_reuse.py scripts/run_alignment_tests.py`
+  - `zig build`
+  - `zig build -Dtarget=x86_64-linux --summary all`
+  - `zig build -Denable-metal=true metal-smoke` reported `mismatches=0`.
+  - `zig build -Denable-metal=true metal-logits-test -- --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk --kernel-repeats 2 --compare-mode full > artifacts/benchmarks/g084_regression_summary/default_full_gate.json` preserved default `actual_kernel="scalar"`, `actual_buffer_mode="copy"`, `compare_mode="full"`, `mismatches=0`, and top-1/top-20 matches.
+  - `uv run python scripts/run_alignment_tests.py` preserved HF bridge alignment for `Hi,`, `The capital of China is`, and `What is 1+1?` with max absolute logit diff `0.0`; sampling smoke remained `temperature=0.6`, `top_p=0.95`, `top_k=20`, candidate count `20`, and token `353`.
+  - `uv run python scripts/benchmark_metal_logits.py --no-build --warmup 1 --repeats 2 --cpu-repeats 1 --kernel-repeats 5 --out artifacts/benchmarks/g084_regression_summary/default_full_benchmark.json` preserved wrapper defaults `actual_kernel="scalar"`, `buffer_mode="copy"`, `compare_mode="full"`, `benchmark_command_mode="per_iter"`, Metal `mismatches=0`, top-1/top-20 matches, and CPU numpy mismatches `0`.
+  - A focused Python assertion block validated `summary.json`, `default_full_gate.json`, and `default_full_benchmark.json`.
+- Subagent evidence:
+  - Explore mapped the relevant artifact producers and stable JSON keys: `benchmark_metal_command_modes.py`, `benchmark_metal_logits_reuse.py`, `benchmark_metal_logits.py`, `benchmark_metal_logits_matrix.py`, and direct `metal_logits_test.zig` outputs.
+  - Planner recommended pivoting away from near-duplicate threadgroup variants and ranked read-only/measurement feasibility before any prepacked/tiled layout work.
+  - Test-engineer supplied the G084 validation matrix and rollback criteria used for alignment, Zig/Linux boundaries, Metal smoke/default gates, wrapper defaults, and command-mode reporting semantics.
+  - Code-reviewer initially requested changes because malformed/missing nested correctness evidence could pass or crash validation; fixed by requiring nested `per_iter`/`batched` sample rows and treating malformed `mismatches` as a clean validation failure, then re-review returned APPROVE with zero findings.
+- Review-fix evidence:
+  - Negative temp-artifact checks passed: removing `reports_by_command_mode` now produces `verdict=fail`, and setting `mismatches="not-an-int"` now produces `verdict=fail` with a `malformed mismatches` failure reason instead of a traceback.
+  - Positive summary regeneration still passed with `verdict=pass` and empty failure reasons.
+- Decision: keep the summary utility as a measurement-safety milestone. Runtime defaults, Metal kernels, `auto`, and HF bridge behavior were unchanged.
+- Next direction: add a read-only feasibility audit for a genuinely different prepacked/tiled LM-head weight layout, or target benchmark/integration overhead. Do not add another row-split/threadgroup-only kernel without a qualitatively different memory-layout hypothesis.
