@@ -161,6 +161,10 @@ def main() -> None:
     metal_wall, metal_kernel, records = run_metal(args)
     persistent = run_persistent_metal(args)
     metal_per_repeat = [float(record.get("elapsed_ms_per_repeat", record["elapsed_ms"])) for record in records]
+    fixture_load_ms = [float(record["fixture_load_ms"]) for record in records if "fixture_load_ms" in record]
+    bridge_wall_ms = [float(record["metal_bridge_wall_ms"]) for record in records if "metal_bridge_wall_ms" in record]
+    host_compare_ms = [float(record["host_compare_ms"]) for record in records if "host_compare_ms" in record]
+    measured_total_ms = [float(record["total_cli_measured_ms"]) for record in records if "total_cli_measured_ms" in record]
     cpu = run_cpu_fixture(fixture, args.cpu_repeats)
     host_overhead = [wall - kernel for wall, kernel in zip(metal_wall, metal_kernel)]
 
@@ -177,6 +181,10 @@ def main() -> None:
         "metal_command_buffer_total_ms": summarize(metal_kernel),
         "metal_command_buffer_per_repeat_ms": summarize(metal_per_repeat),
         "metal_host_load_and_transfer_overhead_ms": summarize(host_overhead),
+        "metal_cli_fixture_load_ms": summarize(fixture_load_ms) if fixture_load_ms else None,
+        "metal_cli_bridge_wall_ms": summarize(bridge_wall_ms) if bridge_wall_ms else None,
+        "metal_cli_host_compare_ms": summarize(host_compare_ms) if host_compare_ms else None,
+        "metal_cli_measured_total_ms": summarize(measured_total_ms) if measured_total_ms else None,
         "metal_last_record": records[-1],
         "persistent_metal": None
         if persistent is None

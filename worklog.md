@@ -219,3 +219,27 @@
   - `./zig-out/bin/metal_logits_v1 zig-out/metal/kernels.metallib --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk --kernel threadgroup --kernel-repeats 2`
   - `uv run python scripts/run_alignment_tests.py`
 - Next optimization target: G054 should focus on fixture memory layout/transfer overhead, because process-level fixture load still dominates end-to-end wall time.
+
+## 2026-06-10 Resumed ultragoal G054 — fixture load and transfer bottleneck instrumentation
+- Added benchmark clarity instrumentation to `metal_logits_v1` JSON output: `fixture_load_ms`, `metal_bridge_wall_ms`, `host_compare_ms`, and `total_cli_measured_ms`. These fields are also summarized by `scripts/benchmark_metal_logits.py` when present.
+- The implementation uses Zig 0.16's `std.Io.Clock.awake.now(io)` timing API. Initial attempts with older `std.time.Timer` / `std.time.nanoTimestamp` APIs failed under the installed Zig toolchain and were corrected before commit.
+- Latest instrumented full-vocab scalar check remained correct: expected/actual top-1 `353`, top-20 set match `true`, `mismatches=0`, `max_abs_diff=0.000011444092`.
+- Latest instrumented benchmark (`--kernel scalar --kernel-repeats 5 --persistent-iters 3`) produced this bottleneck split:
+  - One-shot CLI wall mean: `2384.427 ms`.
+  - CLI-measured total mean: `2127.364 ms`.
+  - Fixture load mean: `1941.055 ms`.
+  - Metal bridge wall mean: `162.553 ms`.
+  - Host compare mean: `22.918 ms`.
+  - Command-buffer per-repeat mean: `16.102 ms`.
+  - Persistent sample: fixture load `1742.705 ms`, bridge wall `272.099 ms`, persistent loop `196.435 ms` for `3×5` kernel repeats, `persistent_ms_per_kernel_repeat=13.096 ms`.
+- Interpretation: the dominant end-to-end bottleneck is confirmed as fixture file load plus host-side copying/materialization, not the LM-head command-buffer itself. The next throughput-relevant path should avoid the current fixture format's full read-and-copy cycle, memory-map/reuse host arrays, or move toward a real persistent backend that does not reload a ~971 MiB fixture per process.
+- Verification commands run:
+  - `zig fmt src/metal_logits_test.zig`
+  - `zig build`
+  - `zig build -Denable-metal=true metal-lib`
+  - `zig build -Denable-metal=true`
+  - `./zig-out/bin/metal_logits_v1 zig-out/metal/kernels.metallib --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk --kernel scalar --kernel-repeats 2`
+  - `uv run python scripts/benchmark_metal_logits.py --warmup 1 --repeats 2 --cpu-repeats 1 --kernel scalar --kernel-repeats 5 --persistent-iters 3 --out artifacts/benchmarks/g054_instrumented_breakdown.json`
+  - `zig build -Dtarget=x86_64-linux --summary all`
+  - `uv run python scripts/run_alignment_tests.py`
+- Remaining limitation: this milestone improves measurement clarity rather than removing the bottleneck. It does not change the fixture binary format or the default HF bridge.

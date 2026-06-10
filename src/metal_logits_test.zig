@@ -92,13 +92,15 @@ pub fn main(init: std.process.Init) !void {
     const metallib_path_z = try arena.dupeZ(u8, opt.metallib_path);
 
     if (opt.fixture_path) |path| {
+        const fixture_load_start = Io.Clock.awake.now(init.io);
         const fixture = try loadFixture(init.io, allocator, path);
+        const fixture_load_ms = elapsedMsSince(init.io, fixture_load_start);
         defer fixture.deinit(allocator);
-        try runCase(stdout, allocator, metallib_path_z, "checkpoint_f32_logits_matmul", fixture, opt.expect_topk, opt.kernel_repeats, opt.benchmark_iters, opt.kernel);
+        try runCase(init.io, stdout, allocator, metallib_path_z, "checkpoint_f32_logits_matmul", fixture, opt.expect_topk, opt.kernel_repeats, opt.benchmark_iters, opt.kernel, fixture_load_ms);
     } else {
         const fixture = try makeTinyFixture(allocator);
         defer fixture.deinit(allocator);
-        try runCase(stdout, allocator, metallib_path_z, "tiny_f32_logits_matmul", fixture, opt.expect_topk, opt.kernel_repeats, opt.benchmark_iters, opt.kernel);
+        try runCase(init.io, stdout, allocator, metallib_path_z, "tiny_f32_logits_matmul", fixture, opt.expect_topk, opt.kernel_repeats, opt.benchmark_iters, opt.kernel, 0.0);
     }
 }
 
@@ -225,7 +227,8 @@ fn readF32Slice(allocator: std.mem.Allocator, bytes: []const u8, offset: *usize,
     return out;
 }
 
-fn runCase(stdout: *Io.Writer, allocator: std.mem.Allocator, metallib_path_z: [:0]const u8, fixture_name: []const u8, fixture: Fixture, expect_topk: bool, kernel_repeats: u32, benchmark_iters: u32, kernel: Kernel) !void {
+fn runCase(io: Io, stdout: *Io.Writer, allocator: std.mem.Allocator, metallib_path_z: [:0]const u8, fixture_name: []const u8, fixture: Fixture, expect_topk: bool, kernel_repeats: u32, benchmark_iters: u32, kernel: Kernel, fixture_load_ms: f64) !void {
+    const total_start = Io.Clock.awake.now(io);
     const actual = try allocator.alloc(f32, fixture.rows);
     defer allocator.free(actual);
     @memset(actual, std.math.nan(f32));
@@ -235,6 +238,7 @@ fn runCase(stdout: *Io.Writer, allocator: std.mem.Allocator, metallib_path_z: [:
     var benchmark: c.NnMetalBenchmarkResult = std.mem.zeroes(c.NnMetalBenchmarkResult);
     var err: [2048]u8 = std.mem.zeroes([2048]u8);
 
+    const bridge_start = Io.Clock.awake.now(io);
     const rc = if (benchmark_iters == 0)
         c.nn_metal_run_logits_matmul(
             metallib_path_z.ptr,
@@ -267,11 +271,13 @@ fn runCase(stdout: *Io.Writer, allocator: std.mem.Allocator, metallib_path_z: [:
             err[0..].ptr,
             err.len,
         );
+    const metal_bridge_wall_ms = elapsedMsSince(io, bridge_start);
     if (rc != 0) {
         try stdout.print("metal logits test failed: rc={d} err={s}\n", .{ rc, cString(&err) });
         return error.MetalLogitsFailed;
     }
 
+    const compare_start = Io.Clock.awake.now(io);
     const diff = compare(fixture.expected, actual, fixture.tol);
     if (diff.mismatches != 0) {
         try stdout.print(
@@ -299,6 +305,8 @@ fn runCase(stdout: *Io.Writer, allocator: std.mem.Allocator, metallib_path_z: [:
             return error.MetalLogitsTopKMismatch;
         }
     }
+    const host_compare_ms = elapsedMsSince(io, compare_start);
+    const total_cli_measured_ms = fixture_load_ms + elapsedMsSince(io, total_start);
 
     const elapsed_ms_per_repeat = if (benchmark_iters == 0)
         result.elapsed_ms / @as(f64, @floatFromInt(kernel_repeats))
@@ -306,7 +314,7 @@ fn runCase(stdout: *Io.Writer, allocator: std.mem.Allocator, metallib_path_z: [:
         benchmark.elapsed_ms_per_kernel_repeat;
 
     try stdout.print(
-        "{{\"fixture\":\"{s}\",\"device\":\"{s}\",\"kernel\":\"{s}\",\"rows\":{d},\"cols\":{d},\"max_abs_diff\":{d},\"max_rel_diff\":{d},\"mismatches\":{d},\"tolerance_max_abs\":{d},\"tolerance_max_rel\":{d},\"expected_top1\":{d},\"actual_top1\":{d},\"top1_match\":{},\"top20_set_match\":{},\"kernel_repeats\":{d},\"elapsed_ms\":{d},\"elapsed_ms_per_repeat\":{d}",
+        "{{\"fixture\":\"{s}\",\"device\":\"{s}\",\"kernel\":\"{s}\",\"rows\":{d},\"cols\":{d},\"max_abs_diff\":{d},\"max_rel_diff\":{d},\"mismatches\":{d},\"tolerance_max_abs\":{d},\"tolerance_max_rel\":{d},\"expected_top1\":{d},\"actual_top1\":{d},\"top1_match\":{},\"top20_set_match\":{},\"kernel_repeats\":{d},\"elapsed_ms\":{d},\"elapsed_ms_per_repeat\":{d},\"fixture_load_ms\":{d},\"metal_bridge_wall_ms\":{d},\"host_compare_ms\":{d},\"total_cli_measured_ms\":{d}",
         .{
             fixture_name,
             cString(&probe.device_name),
@@ -325,6 +333,10 @@ fn runCase(stdout: *Io.Writer, allocator: std.mem.Allocator, metallib_path_z: [:
             kernel_repeats,
             result.elapsed_ms,
             elapsed_ms_per_repeat,
+            fixture_load_ms,
+            metal_bridge_wall_ms,
+            host_compare_ms,
+            total_cli_measured_ms,
         },
     );
     if (benchmark_iters != 0) {
@@ -340,6 +352,11 @@ fn runCase(stdout: *Io.Writer, allocator: std.mem.Allocator, metallib_path_z: [:
         );
     }
     try stdout.writeAll("}\n");
+}
+
+fn elapsedMsSince(io: Io, start: Io.Timestamp) f64 {
+    const elapsed = start.durationTo(Io.Clock.awake.now(io));
+    return @as(f64, @floatFromInt(elapsed.nanoseconds)) / std.time.ns_per_ms;
 }
 
 fn argmax(values: []const f32) usize {
