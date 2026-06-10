@@ -73,12 +73,13 @@ const Options = struct {
     kernel_repeats: u32 = 1,
     benchmark_iters: u32 = 0,
     kernel: Kernel = .scalar,
+    matrix_kernels: ?[]const u8 = null,
     buffer_mode: BufferMode = .copy,
 };
 
 fn usage() []const u8 {
     return
-    \\metal_logits_v1 <metallib> [--fixture artifacts/.../fixture.bin] [--expect-topk] [--kernel scalar|threadgroup|auto] [--buffer-mode copy|nocopy] [--kernel-repeats N] [--benchmark-iters N]
+    \\metal_logits_v1 <metallib> [--fixture artifacts/.../fixture.bin] [--expect-topk] [--kernel scalar|threadgroup|auto] [--matrix-kernels scalar,threadgroup] [--buffer-mode copy|nocopy] [--kernel-repeats N] [--benchmark-iters N]
     \\
     \\Prototype-only CLI for the sidecar Metal LM-head logits projection.
     \\It does not run the transformer or replace infer_cpu_v1's default HF bridge.
@@ -86,6 +87,8 @@ fn usage() []const u8 {
     \\the pipeline supports its fixed 256-thread layout, otherwise scalar.
     \\--benchmark-iters keeps one fixture load and one Metal buffer setup alive
     \\for N measured command-buffer iterations.
+    \\--matrix-kernels is benchmark-only: it loads the fixture once, emits a
+    \\shared-load header, then emits one JSON result per requested kernel.
     \\
     ;
 }
@@ -114,11 +117,19 @@ pub fn main(init: std.process.Init) !void {
         const fixture = try loadFixture(init.io, allocator, path);
         const fixture_load_ms = elapsedMsSince(init.io, fixture_load_start);
         defer fixture.deinit(allocator);
-        try runCase(init.io, stdout, allocator, metallib_path_z, "checkpoint_f32_logits_matmul", fixture, opt.expect_topk, opt.kernel_repeats, opt.benchmark_iters, opt.kernel, opt.buffer_mode, fixture_load_ms);
+        if (opt.matrix_kernels) |matrix_kernels| {
+            try runMatrixCases(init.io, stdout, allocator, metallib_path_z, "checkpoint_f32_logits_matmul", fixture, opt.expect_topk, opt.kernel_repeats, opt.benchmark_iters, matrix_kernels, opt.buffer_mode, fixture_load_ms);
+        } else {
+            try runCase(init.io, stdout, allocator, metallib_path_z, "checkpoint_f32_logits_matmul", fixture, opt.expect_topk, opt.kernel_repeats, opt.benchmark_iters, opt.kernel, opt.buffer_mode, fixture_load_ms);
+        }
     } else {
         const fixture = try makeTinyFixture(allocator);
         defer fixture.deinit(allocator);
-        try runCase(init.io, stdout, allocator, metallib_path_z, "tiny_f32_logits_matmul", fixture, opt.expect_topk, opt.kernel_repeats, opt.benchmark_iters, opt.kernel, opt.buffer_mode, 0.0);
+        if (opt.matrix_kernels) |matrix_kernels| {
+            try runMatrixCases(init.io, stdout, allocator, metallib_path_z, "tiny_f32_logits_matmul", fixture, opt.expect_topk, opt.kernel_repeats, opt.benchmark_iters, matrix_kernels, opt.buffer_mode, 0.0);
+        } else {
+            try runCase(init.io, stdout, allocator, metallib_path_z, "tiny_f32_logits_matmul", fixture, opt.expect_topk, opt.kernel_repeats, opt.benchmark_iters, opt.kernel, opt.buffer_mode, 0.0);
+        }
     }
 }
 
@@ -139,15 +150,11 @@ fn parseOptions(args: []const []const u8) !Options {
         } else if (std.mem.eql(u8, args[i], "--kernel")) {
             i += 1;
             if (i >= args.len) return error.MissingKernel;
-            if (std.mem.eql(u8, args[i], "scalar")) {
-                opt.kernel = .scalar;
-            } else if (std.mem.eql(u8, args[i], "threadgroup")) {
-                opt.kernel = .threadgroup;
-            } else if (std.mem.eql(u8, args[i], "auto")) {
-                opt.kernel = .auto;
-            } else {
-                return error.InvalidKernel;
-            }
+            opt.kernel = try parseKernel(args[i]);
+        } else if (std.mem.eql(u8, args[i], "--matrix-kernels")) {
+            i += 1;
+            if (i >= args.len) return error.MissingMatrixKernels;
+            opt.matrix_kernels = args[i];
         } else if (std.mem.eql(u8, args[i], "--buffer-mode")) {
             i += 1;
             if (i >= args.len) return error.MissingBufferMode;
@@ -174,6 +181,13 @@ fn parseOptions(args: []const []const u8) !Options {
         }
     }
     return opt;
+}
+
+fn parseKernel(label: []const u8) !Kernel {
+    if (std.mem.eql(u8, label, "scalar")) return .scalar;
+    if (std.mem.eql(u8, label, "threadgroup")) return .threadgroup;
+    if (std.mem.eql(u8, label, "auto")) return .auto;
+    return error.InvalidKernel;
 }
 
 fn makeTinyFixture(allocator: std.mem.Allocator) !Fixture {
@@ -393,6 +407,24 @@ fn runCase(io: Io, stdout: *Io.Writer, allocator: std.mem.Allocator, metallib_pa
         );
     }
     try stdout.writeAll("}\n");
+}
+
+fn runMatrixCases(io: Io, stdout: *Io.Writer, allocator: std.mem.Allocator, metallib_path_z: [:0]const u8, fixture_name: []const u8, fixture: Fixture, expect_topk: bool, kernel_repeats: u32, benchmark_iters: u32, matrix_kernels: []const u8, buffer_mode: BufferMode, shared_fixture_load_ms: f64) !void {
+    try stdout.print(
+        "{{\"matrix\":\"begin\",\"fixture\":\"{s}\",\"shared_fixture_load_ms\":{d},\"rows\":{d},\"cols\":{d},\"buffer_mode\":\"{s}\",\"kernel_repeats\":{d},\"benchmark_iters\":{d}}}\n",
+        .{ fixture_name, shared_fixture_load_ms, fixture.rows, fixture.cols, buffer_mode.label(), kernel_repeats, benchmark_iters },
+    );
+    var count: usize = 0;
+    var split = std.mem.splitScalar(u8, matrix_kernels, ',');
+    while (split.next()) |raw_kernel| {
+        const trimmed = std.mem.trim(u8, raw_kernel, " \t\r\n");
+        if (trimmed.len == 0) continue;
+        const kernel = try parseKernel(trimmed);
+        try runCase(io, stdout, allocator, metallib_path_z, fixture_name, fixture, expect_topk, kernel_repeats, benchmark_iters, kernel, buffer_mode, 0.0);
+        count += 1;
+    }
+    if (count == 0) return error.EmptyMatrixKernels;
+    try stdout.print("{{\"matrix\":\"end\",\"kernel_count\":{d}}}\n", .{count});
 }
 
 fn elapsedMsSince(io: Io, start: Io.Timestamp) f64 {

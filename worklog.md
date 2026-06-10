@@ -698,3 +698,47 @@
   - HF bridge alignment remained intact for all three required prompts with max absolute logit diff `0.0`; sampling smoke remained `temperature=0.6`, `top_p=0.95`, `top_k=20`, candidate count `20`, selected token `353`.
 - Decision: keep the confidence-labeling fix. It changes benchmark reporting only; no runtime/default behavior changed.
 - Next optimization target: remove remaining fixture-load dominance in benchmark comparisons with an opt-in fixture-reuse or in-process multi-variant path, while keeping the one-shot subprocess matrix as rollback.
+
+## 2026-06-10 Resumed ultragoal G071 — reusable-fixture Metal matrix prototype
+- Added an opt-in `--matrix-kernels` mode to `metal_logits_v1` for benchmark-only multi-kernel runs.
+- Design:
+  - Existing one-kernel CLI behavior remains unchanged unless `--matrix-kernels` is provided.
+  - The new mode loads the fixture once, emits an NDJSON header with `shared_fixture_load_ms`, runs one existing `runCase` per requested kernel, and emits an NDJSON footer with `kernel_count`.
+  - Per-kernel rows report `fixture_load_ms=0` so fixture-load cost is separated from per-variant timing.
+  - The existing subprocess matrix script remains the rollback/control path.
+- Added `scripts/benchmark_metal_logits_reuse.py` as a small wrapper for the new NDJSON mode.
+  - It validates header/footer shape, row order, top-k correctness, mismatch count, actual kernel evidence, no-copy evidence, and timing sanity.
+  - It emits a distinct `mode=reusable-fixture-matrix` JSON schema instead of overloading the existing per-row matrix schema.
+  - After code-review, explicit `auto` rows are supported as diagnostic-only: they must report a concrete actual kernel and are excluded from persistent timing rankings.
+- Validation commands:
+  - `python3 -m py_compile scripts/benchmark_metal_logits_reuse.py`
+  - `zig build -Denable-metal=true`
+  - `zig build -Denable-metal=true metal-lib`
+  - Direct reusable CLI smoke: `./zig-out/bin/metal_logits_v1 zig-out/metal/kernels.metallib --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk --buffer-mode nocopy --kernel-repeats 5 --benchmark-iters 10 --matrix-kernels scalar,threadgroup | tee artifacts/benchmarks/g071_reuse/reuse_cli_nocopy.ndjson`
+  - Direct NDJSON assertions against `artifacts/benchmarks/g071_reuse/reuse_cli_nocopy.ndjson`.
+  - Wrapper reusable matrix: `uv run python scripts/benchmark_metal_logits_reuse.py --no-build --kernel-repeats 5 --benchmark-iters 10 --kernels scalar,threadgroup --buffer-mode nocopy --out artifacts/benchmarks/g071_reuse/reuse_matrix_after_review.json`
+  - Auto diagnostic wrapper check: `uv run python scripts/benchmark_metal_logits_reuse.py --no-build --kernel-repeats 2 --benchmark-iters 2 --kernels auto --buffer-mode nocopy --out artifacts/benchmarks/g071_reuse/reuse_auto_diagnostic.json`
+  - Existing matrix rollback/control: `uv run python scripts/benchmark_metal_logits_matrix.py --no-build --out artifacts/benchmarks/g071_reuse/matrix_control_nocopy.json --artifact-dir artifacts/benchmarks/g071_reuse/matrix_control_runs --kernels scalar,threadgroup --buffer-modes nocopy --warmup 1 --repeats 2 --cpu-repeats 1 --kernel-repeats 5 --persistent-iters 10 --persistent-samples 1`
+  - Full verification: `zig fmt --check src/metal_logits_test.zig`; `python3 -m py_compile scripts/benchmark_metal_logits.py scripts/benchmark_metal_logits_matrix.py scripts/benchmark_metal_logits_reuse.py`; `zig build`; `zig build -Dtarget=x86_64-linux --summary all`; `zig build -Denable-metal=true metal-smoke`; `zig build -Denable-metal=true metal-logits-test -- --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk --kernel-repeats 2`; `uv run python scripts/run_alignment_tests.py`.
+- Reusable wrapper results after review:
+  - `artifacts/benchmarks/g071_reuse/reuse_matrix_after_review.json` verdict `pass`.
+  - `shared_fixture_load_ms=379.988792`, `per_row_fixture_load_ms=0.0`, `avoided_duplicate_fixture_load_estimate_ms=379.988792` for two kernels.
+  - Scalar/nocopy: actual kernel `scalar`, top-1/top-20 pass, mismatches `0`, persistent per-kernel-repeat `12.310240268707275 ms`.
+  - Threadgroup/nocopy: actual kernel `threadgroup`, top-1/top-20 pass, mismatches `0`, persistent per-kernel-repeat `10.7452392578125 ms`.
+  - Persistent ranking favored `threadgroup/nocopy`.
+  - `artifacts/benchmarks/g071_reuse/reuse_auto_diagnostic.json` verdict `pass`; requested `auto` resolved to concrete `actual_kernel=threadgroup` and produced an empty ranking by design.
+- Existing matrix rollback/control results:
+  - `artifacts/benchmarks/g071_reuse/matrix_control_nocopy.json` verdict `pass`.
+  - Control remains fixture-load dominated: bottleneck summary `likely_next_focus=fixture_load`, with fixture-load shares around `75%` and `76%` of measured-total rows in this run.
+  - Control scalar/nocopy and threadgroup/nocopy rows both preserved no-copy evidence, top-k correctness, and mismatches `0`.
+- Full verification results:
+  - Linux cross build succeeded.
+  - Metal smoke reported mismatches `0`.
+  - Full-vocab Metal logits fixture retained `top1_match=true`, `top20_set_match=true`, and mismatches `0`.
+  - HF bridge alignment remained intact for all three required prompts with max absolute logit diff `0.0`; sampling smoke remained `temperature=0.6`, `top_p=0.95`, `top_k=20`, candidate count `20`, selected token `353`.
+- Review:
+  - Architect subagent agreed the safest design is a new opt-in batch mode in `metal_logits_v1`, not retrofitting the existing matrix parser.
+  - Test-engineer subagent provided direct NDJSON, wrapper, and rollback/control assertions; those assertions were run.
+  - Code-reviewer initially requested changes because auto diagnostic rows failed wrapper validation; fixed by treating auto as diagnostic-only concrete-kernel evidence and excluding auto rows from rankings. Re-review APPROVED.
+- Decision: keep the reusable-fixture benchmark prototype. It improves benchmark clarity by separating one shared fixture load from per-kernel timing, but it is still directional and not a runtime/default promotion.
+- Next optimization target: collect repeated reusable-fixture samples or extend the wrapper into a higher-confidence reusable matrix before any default/kernel promotion decision.
