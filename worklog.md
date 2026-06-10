@@ -1197,3 +1197,27 @@
   - Architect agreed the `float4`/128-thread shape was ABI-safe and opt-in, but benchmark-gated: keep only if it shows a real median win in both modes; otherwise rollback or keep experimental only.
   - Test-engineer provided default-preservation, tiny/full fixture, HF alignment, and benchmark-matrix validation guidance; the core correctness and benchmark gates above followed that shape with the actual `threadgroup128x4` candidate.
 - Next direction: avoid more near-duplicate 128-thread reductions unless a stronger memory-layout hypothesis is available. The next safe loop should either analyze a true prepacked/tiled layout boundary in read-only form first or move to another measured bottleneck while preserving HF alignment.
+
+## 2026-06-10 Resumed ultragoal G083 — Rolled back two-rows-per-threadgroup LM-head kernel
+- Goal: test a stronger memory-reuse hypothesis after G082 by computing two logits rows per 128-thread Metal threadgroup, reusing hidden loads and reducing threadgroup count while preserving the existing row-major ABI and leaving defaults/auto unchanged.
+- Candidate attempted:
+  - Added an explicit `logits_matmul_tg128r2` kernel that used the same four-buffer ABI (`hidden`, `weights`, `logits`, `dims`) but computed two adjacent vocab rows per threadgroup.
+  - Temporarily extended bridge dispatch metadata with `rows_per_threadgroup=2` for the candidate so it dispatched `ceil(rows/2)` threadgroups while existing scalar/threadgroup/threadgroup128 paths retained their normal shape.
+  - Temporarily added `threadgroup128r2` labels and benchmark allowlists. Defaults and `auto` were not changed.
+- Correctness evidence before rollback:
+  - `zig fmt --check src/metal_logits_test.zig`
+  - `python3 -m py_compile scripts/benchmark_metal_logits.py scripts/benchmark_metal_logits_matrix.py scripts/benchmark_metal_logits_reuse.py scripts/benchmark_metal_command_modes.py`
+  - `zig build -Denable-metal=true metal-lib`
+  - `zig build -Denable-metal=true`
+  - `zig build -Denable-metal=true metal-logits-test -- --kernel threadgroup128r2 --compare-mode full` passed on the tiny fixture with `actual_kernel="threadgroup128r2"`, `mismatches=0`, `top1_match=true`, and `top20_set_match=true`.
+  - `zig build -Denable-metal=true metal-logits-test -- --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk --kernel threadgroup128r2 --buffer-mode nocopy --kernel-repeats 2 --compare-mode full > artifacts/benchmarks/g083_tg128r2/direct_tg128r2_full.json` passed with `actual_kernel="threadgroup128r2"`, `actual_buffer_mode="nocopy"`, `mismatches=0`, `top1_match=true`, `top20_set_match=true`, and `max_abs_diff=1.9073486e-06`.
+- Benchmark evidence:
+  - `uv run python scripts/benchmark_metal_command_modes.py --no-build --samples 7 --kernel-repeats 5 --benchmark-iters 10 --kernels scalar,threadgroup,threadgroup128,threadgroup128r2 --buffer-mode nocopy --compare-mode full --out artifacts/benchmarks/g083_tg128r2/command_modes_full_samples7.json --artifact-dir artifacts/benchmarks/g083_tg128r2/command_modes_full_samples7_runs`
+  - Report verdict was `pass` with `failure_reasons=[]`; all rows preserved full comparison correctness and actual no-copy evidence.
+  - Per-iter medians (`persistent_ms_per_kernel_repeat`): `threadgroup/nocopy` `11.209940910339355 ms`, `threadgroup128/nocopy` `11.251521110534668 ms`, `threadgroup128r2/nocopy` `11.29378080368042 ms`, `scalar/nocopy` `12.51744031906128 ms`.
+  - Batched medians: `threadgroup128/nocopy` `11.018860340118408 ms`, `threadgroup/nocopy` `11.164960861206055 ms`, `threadgroup128r2/nocopy` `11.18107795715332 ms`, `scalar/nocopy` `12.462060451507568 ms`.
+- Decision and rollback:
+  - The candidate was correct but failed the keep threshold. It was ~0.75% slower than the best existing per-iter kernel and ~1.47% slower than the best existing batched kernel, so it did not justify keeping another opt-in kernel.
+  - Rolled back all source/script changes with `git restore metal/vector_add.metal src/metal_bridge.m src/metal_logits_test.zig scripts/benchmark_metal_logits.py scripts/benchmark_metal_logits_matrix.py scripts/benchmark_metal_logits_reuse.py`.
+  - No kernel/default behavior changed. The milestone outcome is a documented no-change rollback.
+- Next direction: row-pair hidden reuse did not beat existing row-per-threadgroup kernels, so further LM-head kernel work should likely stop unless a qualitatively different layout/tile design is justified. Next safe iteration should shift to measurement/reporting, integration boundaries, or another measured bottleneck rather than adding more near-duplicate kernels.
