@@ -93,3 +93,15 @@
   - `uv run python scripts/run_alignment_tests.py`
 - Default `infer_cpu_v1` behavior remains HF-bridge based and unchanged; alignment still passes for all three required prompts with max absolute logit diff `0.0` and default sampling temperature `0.6`, top_p `0.95`, top_k `20`.
 - Known limitation: the prototype CLI consumes generated fixtures; it does not tokenize prompts, run transformer blocks, or accelerate the default inference path yet.
+
+## 2026-06-10 Ultragoal Gate 5 — throughput baseline
+- Added `scripts/benchmark_metal_logits.py` to benchmark the fixture-driven Metal LM-head prototype, CPU NumPy/Accelerate reference projection, Metal command-buffer time, CLI wall time, and estimated host/load/transfer overhead.
+- Benchmark artifact: `artifacts/benchmarks/metal_logits_benchmark.json` (ignored). Fixture: `artifacts/metal/gate3/full_hi/fixture.bin`, size `1018116120` bytes, rows `248320`, cols `1024`.
+- Metal prototype baseline over 3 repeats: CLI wall mean `2137.514 ms`, min `2127.880 ms`, max `2150.459 ms`; Metal command-buffer mean `24.318 ms`, min `21.355 ms`, max `29.660 ms`; estimated host fixture-load/copy/verification overhead mean `2113.196 ms`.
+- CPU reference baseline over 2 repeats using NumPy/Accelerate on the same fixture: mean `34.605 ms`, min `14.148 ms`, max `55.061 ms`, max_abs_diff `0.0`, top1 `353`.
+- Current bridge baseline remains the earlier `artifacts/benchmarks/bridge_baseline.json`; local-app baseline remains skipped because no fair local app/CLI baseline is configured for identical Qwen3.5-0.8B settings.
+- Verification commands run:
+  - `uv run python scripts/benchmark_metal_logits.py --warmup 1 --repeats 3 --cpu-repeats 2`
+  - `zig build`
+  - `uv run python scripts/run_alignment_tests.py`
+- Interpretation: the current prototype proves correctness but is not yet a throughput win end-to-end; the dominant optimization target is avoiding repeated ~971 MiB fixture load/copy and separating persistent-buffer benchmark timing from one-shot CLI overhead.
