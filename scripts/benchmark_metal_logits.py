@@ -32,9 +32,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--kernel-repeats", type=int, default=5)
     parser.add_argument(
         "--benchmark-command-mode",
-        choices=["per_iter", "batched"],
+        choices=["per_iter", "batched", "session"],
         default="per_iter",
-        help="Persistent benchmark command-buffer mode to request when --persistent-iters is set",
+        help="Persistent benchmark command-buffer mode to request when --persistent-iters is set; session is retained row-major and copy-backed only",
     )
     parser.add_argument(
         "--persistent-iters",

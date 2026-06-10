@@ -34,6 +34,8 @@ typedef struct NnMetalBenchmarkResult {
     char command_mode[32];
 } NnMetalBenchmarkResult;
 
+typedef struct NnMetalLogitsSession NnMetalLogitsSession;
+
 int nn_metal_probe(NnMetalProbe *out_probe, char *err, size_t err_len);
 
 int nn_metal_run_vector_add(
@@ -112,6 +114,48 @@ int nn_metal_benchmark_logits_matmul_persistent_batched(
     char *err,
     size_t err_len
 );
+
+// Retained-session prototype for benchmark-only Gate A work. The first
+// implementation is intentionally copy-backed only: pass zero for
+// use_no_copy_buffers. This keeps Metal objects and row-major buffers alive
+// behind an opaque handle while preserving the existing synchronous APIs as the
+// default rollback path.
+int nn_metal_logits_session_create(
+    const char *metallib_path,
+    const char *kernel_name,
+    const float *weights_row_major,
+    uint32_t rows,
+    uint32_t cols,
+    uint8_t use_no_copy_buffers,
+    NnMetalLogitsSession **out_session,
+    NnMetalProbe *out_probe,
+    char *err,
+    size_t err_len
+);
+
+int nn_metal_logits_session_run(
+    NnMetalLogitsSession *session,
+    const float *hidden,
+    float *logits_out,
+    uint32_t repeat_count,
+    NnMetalSmokeResult *out_result,
+    char *err,
+    size_t err_len
+);
+
+int nn_metal_logits_session_benchmark(
+    NnMetalLogitsSession *session,
+    const float *hidden,
+    float *logits_out,
+    uint32_t iterations,
+    uint32_t repeat_count,
+    NnMetalSmokeResult *out_result,
+    NnMetalBenchmarkResult *out_benchmark,
+    char *err,
+    size_t err_len
+);
+
+void nn_metal_logits_session_destroy(NnMetalLogitsSession *session);
 
 #ifdef __cplusplus
 }

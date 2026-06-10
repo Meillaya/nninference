@@ -28,7 +28,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--compare-mode", "--comparison-mode", choices=["full", "topk"], default="full")
     parser.add_argument("--kernel-repeats", type=int, default=5)
     parser.add_argument("--benchmark-iters", type=int, default=10)
-    parser.add_argument("--benchmark-command-mode", choices=["per_iter", "batched"], default="per_iter")
+    parser.add_argument("--benchmark-command-mode", choices=["per_iter", "batched", "session"], default="per_iter")
     parser.add_argument(
         "--samples",
         type=int,
@@ -39,6 +39,8 @@ def parse_args() -> argparse.Namespace:
     args = parser.parse_args()
     if args.samples < 1:
         raise SystemExit("--samples must be >= 1")
+    if args.benchmark_command_mode == "session" and args.buffer_mode != "copy":
+        raise SystemExit("--benchmark-command-mode session is copy-backed only; pass --buffer-mode copy")
     return args
 
 

@@ -5,6 +5,7 @@
 
 #include <math.h>
 #include <stdarg.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -313,6 +314,251 @@ int nn_metal_run_vector_add(
         }
         return 0;
     }
+}
+
+@interface NnMetalLogitsSessionImpl : NSObject {
+@public
+    id<MTLDevice> device;
+    id<MTLComputePipelineState> pipeline;
+    id<MTLCommandQueue> queue;
+    id<MTLBuffer> hidden_buffer;
+    id<MTLBuffer> weights_buffer;
+    id<MTLBuffer> logits_buffer;
+    id<MTLBuffer> dims_buffer;
+    NnLogitsDispatchConfig dispatch_config;
+    NSUInteger hidden_bytes;
+    NSUInteger logits_bytes;
+    uint32_t rows;
+    uint32_t cols;
+    double setup_ms;
+    char actual_kernel_name[32];
+}
+@end
+
+@implementation NnMetalLogitsSessionImpl
+@end
+
+struct NnMetalLogitsSession {
+    void *impl;
+};
+
+static NnMetalLogitsSessionImpl *nn_session_impl(NnMetalLogitsSession *session) {
+    if (session == NULL || session->impl == NULL) return nil;
+    return (__bridge NnMetalLogitsSessionImpl *)session->impl;
+}
+
+static int nn_metal_logits_session_run_impl(
+    NnMetalLogitsSessionImpl *impl,
+    const float *hidden,
+    float *logits_out,
+    uint32_t repeat_count,
+    NnMetalSmokeResult *out_result,
+    char *err,
+    size_t err_len
+) {
+    if (impl == nil || hidden == NULL || logits_out == NULL) {
+        nn_set_error(err, err_len, "invalid retained logits session run arguments");
+        return 54;
+    }
+    if (repeat_count == 0) repeat_count = 1;
+
+    memcpy([impl->hidden_buffer contents], hidden, impl->hidden_bytes);
+    memset([impl->logits_buffer contents], 0, impl->logits_bytes);
+
+    id<MTLCommandBuffer> command_buffer = [impl->queue commandBuffer];
+    id<MTLComputeCommandEncoder> encoder = [command_buffer computeCommandEncoder];
+    if (command_buffer == nil || encoder == nil) {
+        nn_set_error(err, err_len, "failed to create Metal retained-session command encoder");
+        return 55;
+    }
+
+    [encoder setComputePipelineState:impl->pipeline];
+    [encoder setBuffer:impl->hidden_buffer offset:0 atIndex:0];
+    [encoder setBuffer:impl->weights_buffer offset:0 atIndex:1];
+    [encoder setBuffer:impl->logits_buffer offset:0 atIndex:2];
+    [encoder setBuffer:impl->dims_buffer offset:0 atIndex:3];
+
+    CFAbsoluteTime start_time = CFAbsoluteTimeGetCurrent();
+    nn_encode_logits_dispatches(encoder, &impl->dispatch_config, impl->rows, repeat_count);
+    [encoder endEncoding];
+    [command_buffer commit];
+    [command_buffer waitUntilCompleted];
+    CFAbsoluteTime end_time = CFAbsoluteTimeGetCurrent();
+
+    if ([command_buffer error] != nil) {
+        nn_set_error(err, err_len, "Metal retained-session command buffer failed: %s", [[command_buffer.error localizedDescription] UTF8String]);
+        return 56;
+    }
+
+    memcpy(logits_out, [impl->logits_buffer contents], impl->logits_bytes);
+    if (out_result != NULL) {
+        memset(out_result, 0, sizeof(*out_result));
+        out_result->n = impl->rows;
+        out_result->elapsed_ms = (end_time - start_time) * 1000.0;
+        out_result->used_no_copy_buffers = 0;
+        strncpy(out_result->actual_kernel_name, impl->actual_kernel_name, sizeof(out_result->actual_kernel_name) - 1);
+    }
+    return 0;
+}
+
+int nn_metal_logits_session_create(
+    const char *metallib_path,
+    const char *kernel_name,
+    const float *weights_row_major,
+    uint32_t rows,
+    uint32_t cols,
+    uint8_t use_no_copy_buffers,
+    NnMetalLogitsSession **out_session,
+    NnMetalProbe *out_probe,
+    char *err,
+    size_t err_len
+) {
+    @autoreleasepool {
+        nn_clear_error(err, err_len);
+        if (metallib_path == NULL || weights_row_major == NULL || rows == 0 || cols == 0 || out_session == NULL) {
+            nn_set_error(err, err_len, "invalid retained logits session create arguments");
+            return 40;
+        }
+        *out_session = NULL;
+        if (use_no_copy_buffers) {
+            nn_set_error(err, err_len, "retained logits session no-copy mode is not supported in Gate A prototype");
+            return 41;
+        }
+
+        const char *selected_kernel = nn_logits_kernel_name_or_default(kernel_name);
+        CFAbsoluteTime setup_start = CFAbsoluteTimeGetCurrent();
+        id<MTLDevice> created_device = MTLCreateSystemDefaultDevice();
+        if (created_device == nil) {
+            nn_set_error(err, err_len, "MTLCreateSystemDefaultDevice returned nil");
+            return 42;
+        }
+
+        NSError *ns_error = nil;
+        NSString *library_path = [NSString stringWithUTF8String:metallib_path];
+        id<MTLLibrary> library = [created_device newLibraryWithFile:library_path error:&ns_error];
+        if (library == nil) {
+            nn_set_error(err, err_len, "newLibraryWithFile failed: %s", [[ns_error localizedDescription] UTF8String]);
+            return 43;
+        }
+
+        id<MTLComputePipelineState> created_pipeline = nil;
+        int pipeline_rc = nn_create_logits_pipeline(created_device, library, selected_kernel, &created_pipeline, &selected_kernel, err, err_len, 44, 45);
+        if (pipeline_rc != 0) return pipeline_rc;
+        const NSUInteger fixed_threadgroup_width = nn_logits_kernel_threadgroup_width(selected_kernel);
+
+        NnLogitsDispatchConfig dispatch_config;
+        int dispatch_rc = nn_make_logits_dispatch_config(created_pipeline, fixed_threadgroup_width, rows, &dispatch_config, err, err_len, 46);
+        if (dispatch_rc != 0) return dispatch_rc;
+
+        id<MTLCommandQueue> created_queue = [created_device newCommandQueue];
+        if (created_queue == nil) {
+            nn_set_error(err, err_len, "failed to create Metal retained-session command queue");
+            return 47;
+        }
+
+        const NSUInteger hidden_bytes = (NSUInteger)cols * sizeof(float);
+        const NSUInteger weight_bytes = (NSUInteger)rows * (NSUInteger)cols * sizeof(float);
+        const NSUInteger logits_bytes = (NSUInteger)rows * sizeof(float);
+        id<MTLBuffer> created_hidden = [created_device newBufferWithLength:hidden_bytes options:MTLResourceStorageModeShared];
+        id<MTLBuffer> created_weights = [created_device newBufferWithLength:weight_bytes options:MTLResourceStorageModeShared];
+        id<MTLBuffer> created_logits = [created_device newBufferWithLength:logits_bytes options:MTLResourceStorageModeShared];
+        id<MTLBuffer> created_dims = [created_device newBufferWithLength:sizeof(uint32_t) * 2 options:MTLResourceStorageModeShared];
+        if (created_hidden == nil || created_weights == nil || created_logits == nil || created_dims == nil) {
+            nn_set_error(err, err_len, "failed to allocate retained-session Metal buffers");
+            return 48;
+        }
+        memcpy([created_weights contents], weights_row_major, weight_bytes);
+        uint32_t dims[2] = { rows, cols };
+        memcpy([created_dims contents], dims, sizeof(dims));
+
+        NnMetalLogitsSessionImpl *impl = [[NnMetalLogitsSessionImpl alloc] init];
+        impl->device = created_device;
+        impl->pipeline = created_pipeline;
+        impl->queue = created_queue;
+        impl->hidden_buffer = created_hidden;
+        impl->weights_buffer = created_weights;
+        impl->logits_buffer = created_logits;
+        impl->dims_buffer = created_dims;
+        impl->dispatch_config = dispatch_config;
+        impl->hidden_bytes = hidden_bytes;
+        impl->logits_bytes = logits_bytes;
+        impl->rows = rows;
+        impl->cols = cols;
+        impl->setup_ms = (CFAbsoluteTimeGetCurrent() - setup_start) * 1000.0;
+        strncpy(impl->actual_kernel_name, nn_logits_kernel_label(selected_kernel), sizeof(impl->actual_kernel_name) - 1);
+
+        NnMetalLogitsSession *session = calloc(1, sizeof(NnMetalLogitsSession));
+        if (session == NULL) {
+            nn_set_error(err, err_len, "failed to allocate retained logits session");
+            return 49;
+        }
+        session->impl = (__bridge_retained void *)impl;
+        *out_session = session;
+        nn_fill_probe(created_device, created_pipeline, out_probe);
+        return 0;
+    }
+}
+
+int nn_metal_logits_session_run(
+    NnMetalLogitsSession *session,
+    const float *hidden,
+    float *logits_out,
+    uint32_t repeat_count,
+    NnMetalSmokeResult *out_result,
+    char *err,
+    size_t err_len
+) {
+    @autoreleasepool {
+        nn_clear_error(err, err_len);
+        return nn_metal_logits_session_run_impl(nn_session_impl(session), hidden, logits_out, repeat_count, out_result, err, err_len);
+    }
+}
+
+int nn_metal_logits_session_benchmark(
+    NnMetalLogitsSession *session,
+    const float *hidden,
+    float *logits_out,
+    uint32_t iterations,
+    uint32_t repeat_count,
+    NnMetalSmokeResult *out_result,
+    NnMetalBenchmarkResult *out_benchmark,
+    char *err,
+    size_t err_len
+) {
+    @autoreleasepool {
+        nn_clear_error(err, err_len);
+        if (iterations == 0) iterations = 1;
+        if (repeat_count == 0) repeat_count = 1;
+        NnMetalLogitsSessionImpl *impl = nn_session_impl(session);
+        if (impl == nil || hidden == NULL || logits_out == NULL) {
+            nn_set_error(err, err_len, "invalid retained logits session benchmark arguments");
+            return 57;
+        }
+
+        NnMetalSmokeResult last_result;
+        CFAbsoluteTime loop_start = CFAbsoluteTimeGetCurrent();
+        for (uint32_t iteration = 0; iteration < iterations; iteration += 1) {
+            int rc = nn_metal_logits_session_run_impl(impl, hidden, logits_out, repeat_count, &last_result, err, err_len);
+            if (rc != 0) return rc;
+        }
+        CFAbsoluteTime loop_end = CFAbsoluteTimeGetCurrent();
+
+        if (out_result != NULL) {
+            *out_result = last_result;
+            out_result->elapsed_ms = (loop_end - loop_start) * 1000.0;
+        }
+        nn_fill_benchmark_result(out_benchmark, iterations, repeat_count, impl->setup_ms, (loop_end - loop_start) * 1000.0, "session");
+        return 0;
+    }
+}
+
+void nn_metal_logits_session_destroy(NnMetalLogitsSession *session) {
+    if (session == NULL) return;
+    if (session->impl != NULL) {
+        CFRelease(session->impl);
+        session->impl = NULL;
+    }
+    free(session);
 }
 
 int nn_metal_run_logits_matmul(

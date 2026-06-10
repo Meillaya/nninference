@@ -72,11 +72,13 @@ const BufferMode = enum {
 const BenchmarkCommandMode = enum {
     per_iter,
     batched,
+    session,
 
     fn label(self: BenchmarkCommandMode) []const u8 {
         return switch (self) {
             .per_iter => "per_iter",
             .batched => "batched",
+            .session => "session",
         };
     }
 };
@@ -108,7 +110,7 @@ const Options = struct {
 
 fn usage() []const u8 {
     return
-    \\metal_logits_v1 <metallib> [--fixture artifacts/.../fixture.bin] [--expect-topk] [--kernel scalar|threadgroup|threadgroup128|auto] [--matrix-kernels scalar,threadgroup,threadgroup128] [--buffer-mode copy|nocopy] [--kernel-repeats N] [--benchmark-iters N] [--benchmark-command-mode per_iter|batched] [--compare-mode full|topk]
+    \\metal_logits_v1 <metallib> [--fixture artifacts/.../fixture.bin] [--expect-topk] [--kernel scalar|threadgroup|threadgroup128|auto] [--matrix-kernels scalar,threadgroup,threadgroup128] [--buffer-mode copy|nocopy] [--kernel-repeats N] [--benchmark-iters N] [--benchmark-command-mode per_iter|batched|session] [--compare-mode full|topk]
     \\
     \\Prototype-only CLI for the sidecar Metal LM-head logits projection.
     \\It does not run the transformer or replace infer_cpu_v1's default HF bridge.
@@ -116,6 +118,8 @@ fn usage() []const u8 {
     \\the pipeline supports its fixed 256-thread layout, otherwise scalar.
     \\--benchmark-iters keeps one fixture load and one Metal buffer setup alive
     \\for N measured command-buffer iterations.
+    \\--benchmark-command-mode session is an opt-in retained row-major session
+    \\prototype. It is copy-backed only and rejects --buffer-mode nocopy.
     \\--compare-mode topk is opt-in benchmark instrumentation: it requires
     \\--expect-topk and skips the full per-logit tolerance scan while still
     \\checking fixture top-1/top-20. The default remains full.
@@ -235,6 +239,7 @@ fn parseKernel(label: []const u8) !Kernel {
 fn parseBenchmarkCommandMode(label: []const u8) !BenchmarkCommandMode {
     if (std.mem.eql(u8, label, "per_iter")) return .per_iter;
     if (std.mem.eql(u8, label, "batched")) return .batched;
+    if (std.mem.eql(u8, label, "session")) return .session;
     return error.InvalidBenchmarkCommandMode;
 }
 
@@ -374,24 +379,50 @@ fn runCase(io: Io, stdout: *Io.Writer, allocator: std.mem.Allocator, metallib_pa
             err[0..].ptr,
             err.len,
         )
-    else
-        c.nn_metal_benchmark_logits_matmul_persistent(
+    else if (benchmark_command_mode == .session) session: {
+        var session_ptr: ?*c.NnMetalLogitsSession = null;
+        const create_rc = c.nn_metal_logits_session_create(
             metallib_path_z.ptr,
             kernel.metalName().ptr,
-            fixture.hidden.ptr,
             fixture.weights.ptr,
-            actual.ptr,
             @intCast(fixture.rows),
             @intCast(fixture.cols),
+            if (buffer_mode == .nocopy) 1 else 0,
+            &session_ptr,
+            &probe,
+            err[0..].ptr,
+            err.len,
+        );
+        if (create_rc != 0) break :session create_rc;
+        defer c.nn_metal_logits_session_destroy(session_ptr.?);
+        break :session c.nn_metal_logits_session_benchmark(
+            session_ptr.?,
+            fixture.hidden.ptr,
+            actual.ptr,
             benchmark_iters,
             kernel_repeats,
-            if (buffer_mode == .nocopy) 1 else 0,
-            &probe,
             &result,
             &benchmark,
             err[0..].ptr,
             err.len,
         );
+    } else c.nn_metal_benchmark_logits_matmul_persistent(
+        metallib_path_z.ptr,
+        kernel.metalName().ptr,
+        fixture.hidden.ptr,
+        fixture.weights.ptr,
+        actual.ptr,
+        @intCast(fixture.rows),
+        @intCast(fixture.cols),
+        benchmark_iters,
+        kernel_repeats,
+        if (buffer_mode == .nocopy) 1 else 0,
+        &probe,
+        &result,
+        &benchmark,
+        err[0..].ptr,
+        err.len,
+    );
     const metal_bridge_wall_ms = elapsedMsSince(io, bridge_start);
     if (rc != 0) {
         try stdout.print("metal logits test failed: rc={d} err={s}\n", .{ rc, cString(&err) });
