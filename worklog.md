@@ -107,11 +107,11 @@
 - Interpretation: the current prototype proves correctness but is not yet a throughput win end-to-end; the dominant optimization target is avoiding repeated ~971 MiB fixture load/copy and separating persistent-buffer benchmark timing from one-shot CLI overhead.
 
 ## 2026-06-10 Ultragoal Gate 5 — repeat-dispatch measurement optimization
-- Added `--kernel-repeats N` to `metal_logits_v1` and the Metal bridge, dispatching the same logits kernel repeatedly after a single fixture load and buffer setup. This preserves correctness while giving a cleaner per-dispatch timing signal.
+- Added `--kernel-repeats N` to `metal_logits_v1` and the Metal bridge, dispatching the same logits kernel repeatedly after a single fixture load and buffer setup. This preserves correctness while giving a cleaner amortized command-buffer timing signal.
 - Updated `scripts/benchmark_metal_logits.py` to pass `--kernel-repeats` and report both total command-buffer time and per-repeat command-buffer time.
 - Correctness check with `--kernel-repeats 5`: expected_top1 `353`, actual_top1 `353`, top1_match `true`, top20_set_match `true`, max_abs_diff `0.000011444092`, mismatches `0`; artifact `artifacts/metal/gate5_kernel_repeats_full_hi.json`.
-- Benchmark after repeat-dispatch change (`--warmup 1 --repeats 3 --cpu-repeats 2 --kernel-repeats 5`): Metal command-buffer per-repeat mean `17.891 ms`, min `15.760 ms`, max `20.938 ms`; one-shot CLI wall mean `2458.763 ms`; host/load/copy overhead remains dominant at mean `2369.306 ms`.
-- Compared with the prior Gate 5 baseline mean command-buffer time `24.318 ms`, repeat-dispatch measurement improves per-dispatch observed kernel time by about 26% while leaving the end-to-end fixture CLI dominated by host overhead.
+- Benchmark after repeat-dispatch change (`--warmup 1 --repeats 3 --cpu-repeats 2 --kernel-repeats 5`): amortized Metal command-buffer per-repeat mean `17.891 ms`, min `15.760 ms`, max `20.938 ms`; one-shot CLI wall mean `2458.763 ms`; host/load/copy overhead remains dominant at mean `2369.306 ms`.
+- Compared with the prior Gate 5 baseline mean command-buffer time `24.318 ms`, repeat-dispatch measurement lowers the amortized command-buffer elapsed time per dispatch by about 26% while leaving the end-to-end fixture CLI dominated by host overhead.
 - Verification commands run:
   - `zig build metal-logits-test -- --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk --kernel-repeats 5`
   - `zig build`
@@ -119,3 +119,24 @@
   - `uv run python scripts/benchmark_metal_logits.py --warmup 1 --repeats 3 --cpu-repeats 2 --kernel-repeats 5`
   - `uv run python scripts/run_alignment_tests.py`
 - Next optimization target remains persistent fixture/buffer ownership or live integration; the current CLI still reloads a ~971 MiB fixture for every process invocation.
+
+## 2026-06-10 Gate 6 review fixes
+- Independent code review requested changes for sidecar isolation, benchmark reproducibility, fixture-generator safety, and performance-claim wording.
+- Fixed default build isolation by gating all Metal targets and installs behind explicit `-Denable-metal=true`; default `zig build` remains CPU/HF-bridge only. Verified `zig build -Dtarget=x86_64-linux --summary all` succeeds and installs only `infer_cpu_v1` for a Linux target.
+- Updated benchmark reproducibility so `scripts/benchmark_metal_logits.py` builds prerequisites with `zig build -Denable-metal=true metal-lib` and `zig build -Denable-metal=true` unless `--no-build` is explicitly used.
+- Removed unnecessary `trust_remote_code=True` from checkpoint fixture generation and switched the LM-head fixture source to `model.get_output_embeddings().weight`.
+- Corrected the Metal probe's non-uniform dispatch capability field to avoid overstating support; current smoke output reports `supports_non_uniform_threadgroups: false` rather than inferring support from `supportsFamily:`.
+- Reworded Gate 5 worklog claims from kernel speedup to amortized command-buffer elapsed per dispatch; no GPU timestamp/counter evidence is claimed.
+- Verification commands run:
+  - `zig build`
+  - `zig build -Dtarget=x86_64-linux --summary all`
+  - `zig build -Denable-metal=true metal-lib`
+  - `zig build -Denable-metal=true`
+  - `zig build -Denable-metal=true metal-smoke`
+  - `zig build -Denable-metal=true metal-logits-test -- --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk --kernel-repeats 2`
+  - `uv run python scripts/generate_checkpoint_logits_fixture.py --model-dir Qwen3.5-0.8B --prompt 'Hi,' --row-mode subset --out artifacts/metal/gate2/checkpoint_hi`
+  - `uv run python scripts/generate_checkpoint_logits_fixture.py --model-dir Qwen3.5-0.8B --prompt 'Hi,' --row-mode full --out artifacts/metal/gate3/full_hi`
+  - `zig build -Denable-metal=true metal-logits-test -- --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk --kernel-repeats 5`
+  - `uv run python scripts/benchmark_metal_logits.py --warmup 1 --repeats 2 --cpu-repeats 1 --kernel-repeats 5`
+  - `uv run python scripts/run_alignment_tests.py`
+- Latest post-fix benchmark: amortized Metal command-buffer per-repeat mean `14.640 ms`; CLI wall mean `2220.244 ms`; host/load/copy overhead mean `2147.046 ms`; CPU NumPy reference `62.637 ms` for one repeat. HF alignment still reports max_abs_diff `0.0` for all three required prompts.

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import statistics
 import struct
 import subprocess
@@ -26,7 +27,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--cpu-repeats", type=int, default=2)
     parser.add_argument("--kernel-repeats", type=int, default=5)
+    parser.add_argument("--no-build", action="store_true", help="Skip prerequisite zig build steps")
     return parser.parse_args()
+
+
+def ensure_prerequisites(args: argparse.Namespace) -> None:
+    if args.no_build:
+        return
+    if shutil.which("zig") is None:
+        raise SystemExit("zig not found on PATH; cannot build Metal benchmark prerequisites")
+    subprocess.run(["zig", "build", "-Denable-metal=true", "metal-lib"], check=True)
+    subprocess.run(["zig", "build", "-Denable-metal=true"], check=True)
 
 
 def load_fixture_views(path: Path):
@@ -101,6 +112,8 @@ def run_cpu_fixture(path: Path, repeats: int):
 
 def main() -> None:
     args = parse_args()
+    ensure_prerequisites(args)
+
     fixture = Path(args.fixture)
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)

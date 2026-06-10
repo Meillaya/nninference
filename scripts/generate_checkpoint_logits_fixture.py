@@ -34,10 +34,9 @@ def main() -> None:
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    tokenizer = AutoTokenizer.from_pretrained(args.model_dir, trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(args.model_dir)
     model = AutoModelForCausalLM.from_pretrained(
         args.model_dir,
-        trust_remote_code=True,
         dtype=torch.float32,
         device_map=None,
     )
@@ -48,7 +47,10 @@ def main() -> None:
         outputs = model(**encoded, output_hidden_states=True, use_cache=False)
         hidden = outputs.hidden_states[-1][0, -1, :].to(torch.float32).contiguous()
         logits = outputs.logits[0, -1, :].to(torch.float32).contiguous()
-        embedding = model.get_input_embeddings().weight.detach().to(torch.float32).contiguous()
+        output_embeddings = model.get_output_embeddings()
+        if output_embeddings is None:
+            raise RuntimeError("model does not expose output embeddings for LM-head projection")
+        embedding = output_embeddings.weight.detach().to(torch.float32).contiguous()
 
     vocab_size, hidden_size = embedding.shape
     top20 = torch.topk(logits, k=20).indices.tolist()

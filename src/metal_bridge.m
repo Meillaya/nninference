@@ -35,7 +35,7 @@ static void nn_fill_probe(id<MTLDevice> device, id<MTLComputePipelineState> pipe
         probe->max_threads_per_threadgroup = (uint64_t)[pipeline maxTotalThreadsPerThreadgroup];
     }
     if ([device respondsToSelector:@selector(supportsFamily:)]) {
-        probe->supports_non_uniform_threadgroups = 1;
+        probe->supports_non_uniform_threadgroups = 0;
     }
 }
 
