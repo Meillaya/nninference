@@ -896,3 +896,45 @@
   - Code-reviewer subagent APPROVED the current diff after checking behavior preservation for one-shot dispatch, per-iteration persistent benchmark, batched persistent benchmark, no-copy semantics, threadgroup error codes, command-mode reporting, and benchmark semantics.
 - Decision: keep the cleanup. It reduces dispatch/result duplication without changing benchmark modes or runtime defaults.
 - Next optimization target: run a deliberate follow-on benchmark comparison/reporting pass that separates `per_iter` and `batched` command-mode semantics, then decide whether the next implementation should target command-buffer overhead, host compare/top-k overhead, or kernel/layout work.
+
+## 2026-06-10 Resumed ultragoal G076 — explicit Metal persistent command-mode comparison
+- Added `scripts/benchmark_metal_command_modes.py`, a report wrapper that runs the reusable-fixture benchmark once per persistent command mode and keeps the results separate.
+- Design:
+  - Runs `scripts/benchmark_metal_logits_reuse.py` for `per_iter` and `batched` with identical fixture, kernels, buffer mode, repeat count, iteration count, sample count, CLI, and metallib settings.
+  - Emits `mode=metal-command-mode-comparison`, `per_mode_artifacts`, `per_mode_rankings`, and `comparisons`.
+  - Stores a `semantics_note` explaining that `per_iter` and `batched` have different command-buffer/wait semantics and cross-mode deltas are diagnostic only, not default-promotion evidence.
+  - Normalizes top-level `settings.kernels` to a list while preserving child reusable-fixture report schemas.
+  - Leaves existing runtime behavior, Metal kernels, HF bridge behavior, and reusable-fixture defaults unchanged.
+- Benchmark command:
+  - `uv run python scripts/benchmark_metal_command_modes.py --no-build --samples 7 --kernel-repeats 5 --benchmark-iters 10 --kernels scalar,threadgroup --buffer-mode nocopy --out artifacts/benchmarks/g076_command_modes/command_modes_samples7.json --artifact-dir artifacts/benchmarks/g076_command_modes/reuse_runs_samples7`
+- Report artifacts:
+  - Combined report: `artifacts/benchmarks/g076_command_modes/command_modes_samples7.json`
+  - Per-iteration child report: `artifacts/benchmarks/g076_command_modes/reuse_runs_samples7/per_iter_reuse.json`
+  - Batched child report: `artifacts/benchmarks/g076_command_modes/reuse_runs_samples7/batched_reuse.json`
+- Validation assertions run against the combined report:
+  - Top-level `mode=metal-command-mode-comparison`, `verdict=pass`, `failure_reasons=[]`, `samples=7`, and `command_modes=['per_iter','batched']`.
+  - `settings.kernels=['scalar','threadgroup']`, `buffer_mode=nocopy`, `kernel_repeats=5`, and `benchmark_iters=10`.
+  - Both child reports had `verdict=pass`, `sample_count=7`, `ranking_confidence=medium`, matching `settings.benchmark_command_mode`, matching header command mode, and reusable per-row `fixture_load_ms=0`.
+  - Every sample row preserved `persistent_command_mode` for its mode, `actual_buffer_mode=nocopy`, `used_no_copy_buffers=true`, top-1/top-20 pass, expected/actual top-1 `353`, mismatches `0`, and finite comparison deltas.
+- Results from the medium-confidence sample set:
+  - `per_iter` ranking: `threadgroup/nocopy` median `10.695838928222656 ms` per kernel repeat; `scalar/nocopy` median `12.176780700683594 ms`.
+  - `batched` ranking: `threadgroup/nocopy` median `10.57229995727539 ms` per kernel repeat; `scalar/nocopy` median `11.959681510925293 ms`.
+  - Cross-mode diagnostic deltas: scalar batched was `-0.21709918975830078 ms` per kernel repeat vs per_iter (`-1.78%`); threadgroup batched was `-0.12353897094726562 ms` vs per_iter (`-1.16%`).
+  - Interpretation: both modes still rank `threadgroup/nocopy` ahead of `scalar/nocopy`; batched shows a small directional reduction in this run, but because semantics differ it remains a diagnostic probe rather than a default change.
+- Additional verification commands:
+  - `python3 -m py_compile scripts/benchmark_metal_command_modes.py scripts/benchmark_metal_logits_reuse.py scripts/benchmark_metal_logits.py scripts/benchmark_metal_logits_matrix.py scripts/run_alignment_tests.py`
+  - `zig build`
+  - `zig build -Dtarget=x86_64-linux --summary all`
+  - `zig build -Denable-metal=true metal-smoke`
+  - `zig build -Denable-metal=true metal-logits-test -- --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk --kernel-repeats 2`
+  - `uv run python scripts/run_alignment_tests.py`
+- Additional verification results:
+  - Linux cross build succeeded.
+  - Metal smoke reported mismatches `0`.
+  - Full-vocab Metal logits fixture retained `top1_match=true`, `top20_set_match=true`, expected/actual top-1 `353`, and mismatches `0`.
+  - HF bridge alignment remained intact for all three required prompts with max absolute logit diff `0.0`; sampling smoke remained `temperature=0.6`, `top_p=0.95`, `top_k=20`, candidate count `20`, selected token `353`.
+- Subagent evidence:
+  - Test-engineer provided the validation checklist and emphasized not mixing command-mode rankings, not using CLI wall time as kernel speed, and treating `top20_set_match` as fixture/matmul evidence rather than strict HF top-20 equality.
+  - Code-reviewer APPROVED `scripts/benchmark_metal_command_modes.py`, including command-mode separation, schema clarity after `kernels` normalization, validation of `persistent_command_mode`, and safe build/subprocess behavior.
+- Decision: keep the command-mode comparison wrapper as benchmark infrastructure. Do not change defaults.
+- Next optimization target: use the clarified evidence to choose between a guarded `batched` benchmark default experiment, deeper host compare/top-k overhead measurement, or the next Metal kernel/layout optimization; correctness gates stay mandatory before any throughput change.
