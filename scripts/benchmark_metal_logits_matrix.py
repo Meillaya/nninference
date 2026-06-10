@@ -275,6 +275,7 @@ def run_row(args: argparse.Namespace, kernel: str, buffer_mode: str, row_out: Pa
         "bridge_wall_mean_ms": mean_ms(report, "metal_cli_bridge_wall_ms"),
         "bridge_wall_median_ms": median_ms(report, "metal_cli_bridge_wall_ms"),
         "host_compare_median_ms": median_ms(report, "metal_cli_host_compare_ms"),
+        "command_buffer_total_median_ms": median_ms(report, "metal_command_buffer_total_ms"),
         "command_buffer_per_repeat_mean_ms": mean_ms(report, "metal_command_buffer_per_repeat_ms"),
         "command_buffer_per_repeat_median_ms": median_ms(report, "metal_command_buffer_per_repeat_ms"),
         "persistent_setup_median_ms": persistent_summary_ms(report, "setup_ms"),
@@ -290,6 +291,50 @@ def run_row(args: argparse.Namespace, kernel: str, buffer_mode: str, row_out: Pa
 def rank(rows: list[dict[str, Any]], key: str) -> list[dict[str, Any]]:
     ranked = [row for row in rows if row.get("ok") and row.get(key) is not None]
     return sorted(ranked, key=lambda row: float(row[key]))
+
+
+def share(numerator: Any, denominator: Any) -> float | None:
+    if numerator is None or denominator in (None, 0):
+        return None
+    return float(numerator) / float(denominator)
+
+
+def bottleneck_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    entries: list[dict[str, Any]] = []
+    dominant_counts: dict[str, int] = {}
+    for row in rows:
+        if not row.get("ok"):
+            continue
+        measured = row.get("measured_total_median_ms")
+        buckets = {
+            "fixture_load": row.get("fixture_load_median_ms"),
+            "bridge_wall": row.get("bridge_wall_median_ms"),
+            "host_compare": row.get("host_compare_median_ms"),
+        }
+        observed = {key: value for key, value in buckets.items() if value is not None}
+        dominant = max(observed, key=lambda key: float(observed[key])) if observed else None
+        if dominant is not None:
+            dominant_counts[dominant] = dominant_counts.get(dominant, 0) + 1
+        entries.append(
+            {
+                "variant_id": row.get("variant_id"),
+                "measured_total_median_ms": measured,
+                "dominant_observed_bucket": dominant,
+                "nonexclusive_shares_of_measured_total": {key: share(value, measured) for key, value in buckets.items()},
+                "command_buffer_total_median_ms": row.get("command_buffer_total_median_ms"),
+                "command_buffer_per_repeat_median_ms": row.get("command_buffer_per_repeat_median_ms"),
+                "persistent_ms_per_kernel_repeat": row.get("persistent_ms_per_kernel_repeat"),
+                "persistent_setup_median_ms": row.get("persistent_setup_median_ms"),
+                "persistent_wall_ms_per_kernel_repeat": row.get("persistent_wall_ms_per_kernel_repeat"),
+            }
+        )
+    likely_focus = max(dominant_counts, key=dominant_counts.get) if dominant_counts else None
+    return {
+        "note": "Measured-total shares are non-exclusive because bridge_wall includes GPU command execution and setup; use this summary for bottleneck triage, not accounting totals.",
+        "likely_next_focus": likely_focus,
+        "dominant_bucket_counts": dominant_counts,
+        "rows": entries,
+    }
 
 
 def delta_entry(rows: list[dict[str, Any]], label: str, faster_id: tuple[str, str], slower_id: tuple[str, str], metric: str) -> dict[str, Any]:
@@ -391,6 +436,10 @@ def main() -> None:
             {"kernel": row["kernel"], "buffer_mode": row["buffer_mode"], "command_buffer_per_repeat_median_ms": row["command_buffer_per_repeat_median_ms"], "artifact": row["artifact"]}
             for row in rank(rows, "command_buffer_per_repeat_median_ms")
         ],
+        "ranked_by_command_buffer_total_median_ms": [
+            {"kernel": row["kernel"], "buffer_mode": row["buffer_mode"], "command_buffer_total_median_ms": row["command_buffer_total_median_ms"], "artifact": row["artifact"]}
+            for row in rank(rows, "command_buffer_total_median_ms")
+        ],
         "ranked_by_persistent_setup_median_ms": [
             {"kernel": row["kernel"], "buffer_mode": row["buffer_mode"], "persistent_setup_median_ms": row["persistent_setup_median_ms"], "artifact": row["artifact"]}
             for row in rank(rows, "persistent_setup_median_ms")
@@ -403,6 +452,7 @@ def main() -> None:
             interaction_summary(rows, "measured_total_median_ms"),
             interaction_summary(rows, "persistent_ms_per_kernel_repeat"),
         ],
+        "bottleneck_summary": bottleneck_summary(rows),
         "promotion_note": "medium-confidence directional ranking when repeats >= 7 and persistent_iters >= 10; auto rows are diagnostic-only and require explicit scalar/threadgroup confirmation before default changes",
         "settings": {
             "warmup": args.warmup,

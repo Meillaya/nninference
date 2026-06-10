@@ -576,3 +576,32 @@
 - HF bridge alignment remained intact for all three required prompts with max absolute logit diff `0.0`; sampling smoke remained `temperature=0.6`, `top_p=0.95`, `top_k=20`, candidate count `20`, selected token `353`.
 - Decision: keep the timing-breakdown rankings. No runtime/default behavior changed.
 - Next optimization target: reduce host/fixture dominance in benchmarks, likely by adding a fixture-load amortization or matrix mode that runs multiple variant executions after one build and uses persistent summaries as the primary kernel metric.
+
+## 2026-06-10 Resumed ultragoal G067 — matrix bottleneck summary
+- Added a report-only `bottleneck_summary` to `scripts/benchmark_metal_logits_matrix.py` using existing timing fields.
+- The summary records, per passing row:
+  - measured-total median,
+  - dominant observed timing bucket among fixture load, bridge wall, and host compare,
+  - non-exclusive shares of measured total for those buckets,
+  - command-buffer total/per-repeat medians,
+  - persistent setup, persistent per-kernel-repeat, and persistent wall per kernel repeat.
+- Added `ranked_by_command_buffer_total_median_ms` alongside the G066 breakdown rankings.
+- Validation command:
+  - `uv run python scripts/benchmark_metal_logits_matrix.py --no-build --warmup 1 --repeats 2 --cpu-repeats 1 --kernel-repeats 5 --persistent-iters 2 --persistent-samples 2 --kernels scalar,threadgroup --buffer-modes nocopy --out artifacts/benchmarks/g067_bottleneck/matrix_bottleneck.json --artifact-dir artifacts/benchmarks/g067_bottleneck/runs`
+- Validation result:
+  - Matrix verdict `pass`.
+  - `bottleneck_summary.likely_next_focus=fixture_load`.
+  - `scalar/nocopy`: fixture load share `0.756`, bridge wall share `0.193`, host compare share `0.050`.
+  - `threadgroup/nocopy`: fixture load share `0.748`, bridge wall share `0.204`, host compare share `0.046`.
+  - Interpretation: measured-total benchmark decisions are still fixture-load dominated in this CLI subprocess harness; persistent metrics remain better for kernel-loop comparisons.
+- Verification commands run:
+  - `python3 -m py_compile scripts/benchmark_metal_logits_matrix.py`
+  - The validation matrix command above plus JSON assertions for `bottleneck_summary`, `likely_next_focus`, and `ranked_by_command_buffer_total_median_ms`.
+  - `zig build`
+  - `zig build -Dtarget=x86_64-linux --summary all`
+  - `zig build -Denable-metal=true metal-smoke`
+  - `zig build -Denable-metal=true metal-logits-test -- --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk --kernel-repeats 2`
+  - `uv run python scripts/run_alignment_tests.py`
+- HF bridge alignment remained intact for all three required prompts with max absolute logit diff `0.0`; sampling smoke remained `temperature=0.6`, `top_p=0.95`, `top_k=20`, candidate count `20`, selected token `353`.
+- Decision: keep bottleneck summary. No runtime/default behavior changed.
+- Next optimization target: reduce fixture-load dominance in benchmark decision loops, likely with an in-process multi-variant benchmark path or fixture reuse strategy rather than further kernel changes.
