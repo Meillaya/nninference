@@ -780,3 +780,35 @@
   - Verifier subagent confirmed the scoped sample artifacts and schema passed; its remaining gap (full gates) was closed by the verification commands above.
 - Decision: keep repeated reusable-fixture sample support. This is benchmark infrastructure only; no Zig CLI, kernel, runtime default, or HF bridge behavior changed.
 - Next optimization target: use the repeated reusable wrapper for a higher-sample reusable matrix before considering kernel/default promotion, or begin a new opt-in benchmark path that reduces dispatch overhead inside a single Metal command sequence.
+
+## 2026-06-10 Resumed ultragoal G073 — higher-sample reusable-fixture matrix evidence
+- Ran the repeated reusable-fixture benchmark wrapper at the medium-confidence threshold introduced in G072.
+- Command:
+  - `uv run python scripts/benchmark_metal_logits_reuse.py --no-build --samples 7 --kernel-repeats 5 --benchmark-iters 10 --kernels scalar,threadgroup --buffer-mode nocopy --out artifacts/benchmarks/g073_reuse_samples/reuse_samples7.json`
+- JSON assertions run against `artifacts/benchmarks/g073_reuse_samples/reuse_samples7.json`:
+  - `mode=reusable-fixture-matrix`, `verdict=pass`, and `failure_reasons=[]`.
+  - `sample_count=7`, `settings.samples=7`, `settings.benchmark_iters=10`, `settings.kernel_repeats=5`, `settings.kernels=['scalar','threadgroup']`, and `settings.buffer_mode=nocopy`.
+  - `ranking_confidence=medium` and `includes_auto_diagnostic=false`.
+  - `actual_kernels_seen_by_kernel={'scalar': ['scalar'], 'threadgroup': ['threadgroup']}`.
+  - All seven samples reported matching header/footer shape, scalar/threadgroup row order, `actual_buffer_mode=nocopy`, `used_no_copy_buffers=true`, `top1_match=true`, `top20_set_match=true`, `expected_top1=actual_top1=353`, `mismatches=0`, and per-row `fixture_load_ms=0`.
+  - Legacy `ranked_by_persistent_ms_per_kernel_repeat` retained numeric first-sample values.
+  - `ranked_by_persistent_ms_per_kernel_repeat_samples` contained two grouped sample summaries with `count=7` for persistent setup, persistent elapsed, persistent per-iter, and persistent per-kernel-repeat metrics.
+- Results:
+  - Shared fixture load median: `396.939583 ms`.
+  - Persistent per-kernel-repeat median favored `threadgroup/nocopy` at `10.877981185913086 ms` over `scalar/nocopy` at `12.333481311798096 ms`.
+  - This strengthens the directional evidence that threadgroup/nocopy is the better current LM-head kernel-loop candidate on this Apple M4 fixture, but it remains benchmark evidence only and does not change defaults.
+- Full verification commands run after the higher-sample matrix:
+  - `python3 -m py_compile scripts/benchmark_metal_logits_reuse.py`
+  - `zig build`
+  - `zig build -Dtarget=x86_64-linux --summary all`
+  - `zig build -Denable-metal=true metal-smoke`
+  - `zig build -Denable-metal=true metal-logits-test -- --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk --kernel-repeats 2`
+  - `uv run python scripts/run_alignment_tests.py`
+- Full verification results:
+  - Linux cross build succeeded.
+  - Metal smoke reported mismatches `0`.
+  - Full-vocab Metal logits fixture retained `top1_match=true`, `top20_set_match=true`, and mismatches `0`.
+  - HF bridge alignment remained intact for all three required prompts with max absolute logit diff `0.0`; sampling smoke remained `temperature=0.6`, `top_p=0.95`, `top_k=20`, candidate count `20`, selected token `353`.
+- Note: a verifier subagent checked before the artifact was visible in its workspace and reported the JSON missing. A local reconciliation immediately after full gates confirmed `artifacts/benchmarks/g073_reuse_samples/reuse_samples7.json` exists with size `34953` bytes and passes the assertions above.
+- Decision: keep the evidence milestone. No code, runtime default, kernel selection, or HF bridge behavior changed.
+- Next optimization target: use the medium-confidence evidence to justify a reversible integration change such as making `threadgroup` the explicit default only inside the reusable benchmark wrapper, or instead prototype a lower-dispatch-overhead in-process command sequence while keeping public defaults unchanged.
