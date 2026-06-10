@@ -1258,3 +1258,30 @@
   - Positive summary regeneration still passed with `verdict=pass` and empty failure reasons.
 - Decision: keep the summary utility as a measurement-safety milestone. Runtime defaults, Metal kernels, `auto`, and HF bridge behavior were unchanged.
 - Next direction: add a read-only feasibility audit for a genuinely different prepacked/tiled LM-head weight layout, or target benchmark/integration overhead. Do not add another row-split/threadgroup-only kernel without a qualitatively different memory-layout hypothesis.
+
+## 2026-06-10 Resumed ultragoal G085 — Audited packed Metal session boundary
+- Goal: perform a read-only feasibility audit for a genuinely different optimization class after G081-G084 showed near-duplicate LM-head reductions are low-yield.
+- Added `docs/metal_packed_session_audit.md` as a durable design/audit artifact. No runtime source, kernels, defaults, or benchmark behavior were changed.
+- Current boundary findings:
+  - `src/metal_bridge.h` exposes only synchronous C APIs; its comments explicitly define persistent benchmarking as repeated command-buffer submission inside one synchronous call, not a retained async/session API.
+  - `src/metal_bridge.m` still creates the Metal device, loads the library, builds the pipeline, allocates/wraps buffers, creates command queues/buffers, dispatches, and waits per call or per benchmark invocation.
+  - Reusable helpers already exist for a future session boundary: pipeline creation, dispatch config, dispatch encoding, benchmark result filling, and actual-kernel reporting.
+  - `metal/vector_add.metal` kernels all use the same row-major four-buffer ABI and read `weights[row * cols + col]`; packed/tiled layout would be a distinct ABI and must be explicitly labeled.
+  - `src/metal_logits_test.zig` keeps row-major `NNLGFIX1` fixtures as the correctness source and defaults to scalar/copy/full/per_iter; matrix mode is the current safe comparison seam.
+  - Python wrappers already validate actual kernel/buffer modes, full compare, top-1/top-20, command-mode separation, and nested sample correctness evidence.
+- Audit decision:
+  - Next code-changing work should start with Gate A: an opt-in retained Metal session over the existing row-major fixture. This isolates setup/lifetime risk before adding layout risk.
+  - Gate B, packed/tiled weights, should come only after the retained session boundary is correct and measured. It must use a separate fixture magic/version such as `NNLGPCK1`, layout label/kernel/report schema, and compare against unchanged row-major expected logits.
+  - Critic explicitly approved G085 as read-only audit only and rejected a combined packed+tiled+retained-session implementation until it is split into smaller opt-in prototypes.
+- Future keep/rollback rules captured in the audit:
+  - Existing synchronous APIs and defaults remain unchanged.
+  - Full comparison remains the default correctness gate; top-k remains diagnostic.
+  - No-copy retained sessions must not outlive caller memory unless an explicit ownership/lifetime API is introduced and tested.
+  - Prototype promotion requires full-vocab LM-head fixture correctness, HF alignment preservation, no default drift, and at least a 3% median improvement in both per_iter and batched command modes with samples >= 7.
+  - Packed/tiled claims must not be overstated as full HF-forward correctness unless a separate HF-forward/generation gate is added; track memory/disk pressure because the current full fixture is already roughly 971 MiB.
+  - Roll back on any HF alignment drift, default scalar/copy/full drift, full-vocab mismatch, unsafe lifetime rule, schema breakage, or failure to clear the improvement threshold.
+- Verification for this read-only audit milestone:
+  - `git diff --check`
+  - `python3 -m py_compile scripts/summarize_metal_benchmarks.py scripts/benchmark_metal_command_modes.py scripts/benchmark_metal_logits_reuse.py scripts/benchmark_metal_logits.py scripts/run_alignment_tests.py`
+  - `uv run python scripts/summarize_metal_benchmarks.py` stayed `verdict=pass`, preserving the G084 regression baseline.
+- Next direction: implement Gate A as an opt-in retained-session benchmark path with no packed layout yet, then run default correctness, HF alignment, and sampled command-mode benchmark gates before considering packed/tiled weights.
