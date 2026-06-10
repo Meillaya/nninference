@@ -35,12 +35,14 @@ const Fixture = struct {
 const Kernel = enum {
     scalar,
     threadgroup,
+    threadgroup128,
     auto,
 
     fn metalName(self: Kernel) [:0]const u8 {
         return switch (self) {
             .scalar => "logits_matmul",
             .threadgroup => "logits_matmul_tg",
+            .threadgroup128 => "logits_matmul_tg128",
             .auto => "auto",
         };
     }
@@ -49,6 +51,7 @@ const Kernel = enum {
         return switch (self) {
             .scalar => "scalar",
             .threadgroup => "threadgroup",
+            .threadgroup128 => "threadgroup128",
             .auto => "auto",
         };
     }
@@ -105,7 +108,7 @@ const Options = struct {
 
 fn usage() []const u8 {
     return
-    \\metal_logits_v1 <metallib> [--fixture artifacts/.../fixture.bin] [--expect-topk] [--kernel scalar|threadgroup|auto] [--matrix-kernels scalar,threadgroup] [--buffer-mode copy|nocopy] [--kernel-repeats N] [--benchmark-iters N] [--benchmark-command-mode per_iter|batched] [--compare-mode full|topk]
+    \\metal_logits_v1 <metallib> [--fixture artifacts/.../fixture.bin] [--expect-topk] [--kernel scalar|threadgroup|threadgroup128|auto] [--matrix-kernels scalar,threadgroup,threadgroup128] [--buffer-mode copy|nocopy] [--kernel-repeats N] [--benchmark-iters N] [--benchmark-command-mode per_iter|batched] [--compare-mode full|topk]
     \\
     \\Prototype-only CLI for the sidecar Metal LM-head logits projection.
     \\It does not run the transformer or replace infer_cpu_v1's default HF bridge.
@@ -224,6 +227,7 @@ fn parseOptions(args: []const []const u8) !Options {
 fn parseKernel(label: []const u8) !Kernel {
     if (std.mem.eql(u8, label, "scalar")) return .scalar;
     if (std.mem.eql(u8, label, "threadgroup")) return .threadgroup;
+    if (std.mem.eql(u8, label, "threadgroup128")) return .threadgroup128;
     if (std.mem.eql(u8, label, "auto")) return .auto;
     return error.InvalidKernel;
 }

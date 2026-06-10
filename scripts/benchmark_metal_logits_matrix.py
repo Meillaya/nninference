@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 DEFAULT_KERNELS = ("scalar", "threadgroup")
-KERNEL_CHOICES = ("scalar", "threadgroup", "auto")
+KERNEL_CHOICES = ("scalar", "threadgroup", "threadgroup128", "auto")
 BUFFER_MODES = ("copy", "nocopy")
 
 
@@ -40,7 +40,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--benchmark-script", default="scripts/benchmark_metal_logits.py")
     parser.add_argument("--out", default="artifacts/benchmarks/metal_logits_matrix.json")
     parser.add_argument("--artifact-dir", default="artifacts/benchmarks/matrix_runs")
-    parser.add_argument("--kernels", default=",".join(DEFAULT_KERNELS), help="Comma-separated subset: scalar,threadgroup,auto; auto is diagnostic-only")
+    parser.add_argument("--kernels", default=",".join(DEFAULT_KERNELS), help="Comma-separated subset: scalar,threadgroup,threadgroup128,auto; auto is diagnostic-only")
     parser.add_argument("--buffer-modes", default=",".join(BUFFER_MODES), help="Comma-separated subset: copy,nocopy")
     parser.add_argument("--compare-mode", "--comparison-mode", choices=["full", "topk"], default="full")
     parser.add_argument("--warmup", type=int, default=1)
@@ -144,9 +144,9 @@ def row_passed(
     actual_kernel = report.get("actual_kernel")
     actual_kernels_seen = report.get("actual_kernels_seen", [])
     if kernel == "auto":
-        if actual_kernel not in {"scalar", "threadgroup"}:
+        if actual_kernel not in {"scalar", "threadgroup", "threadgroup128"}:
             reasons.append(f"auto row reported non-concrete actual_kernel={actual_kernel}")
-        if not actual_kernels_seen or any(item not in {"scalar", "threadgroup"} for item in actual_kernels_seen):
+        if not actual_kernels_seen or any(item not in {"scalar", "threadgroup", "threadgroup128"} for item in actual_kernels_seen):
             reasons.append(f"auto row reported invalid actual_kernels_seen={actual_kernels_seen}")
     else:
         if persistent_only and actual_kernel is None:
@@ -167,7 +167,7 @@ def row_passed(
         reasons.append("full_compare_ran mismatch")
     record_actual_kernel = record.get("actual_kernel")
     if kernel == "auto":
-        if record_actual_kernel not in {"scalar", "threadgroup"}:
+        if record_actual_kernel not in {"scalar", "threadgroup", "threadgroup128"}:
             reasons.append(f"auto last record reported non-concrete actual_kernel={record_actual_kernel}")
     else:
         if persistent_only and record_actual_kernel is None:
@@ -249,7 +249,7 @@ def row_passed(
             reasons.append("persistent summary has no samples")
         summary_actual = summary.get("actual_kernels_seen", [])
         if kernel == "auto":
-            if not summary_actual or any(item not in {"scalar", "threadgroup"} for item in summary_actual):
+            if not summary_actual or any(item not in {"scalar", "threadgroup", "threadgroup128"} for item in summary_actual):
                 reasons.append(f"auto persistent summary has invalid actual_kernels_seen={summary_actual}")
         elif summary_actual and any(item != kernel for item in summary_actual):
             reasons.append(f"persistent summary actual_kernels_seen={summary_actual} expected only {kernel}")
@@ -366,11 +366,11 @@ def promotion_note(args: argparse.Namespace) -> str:
         return (
             "medium-confidence persistent-only directional ranking when persistent_samples >= 7 "
             "and persistent_iters >= 10; measured-total rankings are intentionally omitted; "
-            "auto rows are diagnostic-only and require explicit scalar/threadgroup confirmation before default changes"
+            "auto rows are diagnostic-only and require explicit scalar/threadgroup/threadgroup128 confirmation before default changes"
         )
     return (
         "medium-confidence measured-total directional ranking when repeats >= 7 and persistent_iters >= 10; "
-        "auto rows are diagnostic-only and require explicit scalar/threadgroup confirmation before default changes"
+        "auto rows are diagnostic-only and require explicit scalar/threadgroup/threadgroup128 confirmation before default changes"
     )
 
 

@@ -26,7 +26,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--warmup", type=int, default=1)
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--cpu-repeats", type=int, default=2)
-    parser.add_argument("--kernel", choices=["scalar", "threadgroup", "auto"], default="scalar")
+    parser.add_argument("--kernel", choices=["scalar", "threadgroup", "threadgroup128", "auto"], default="scalar")
     parser.add_argument("--buffer-mode", choices=["copy", "nocopy"], default="copy")
     parser.add_argument("--compare-mode", "--comparison-mode", choices=["full", "topk"], default="full")
     parser.add_argument("--kernel-repeats", type=int, default=5)
@@ -232,12 +232,12 @@ def validate_actual_kernel(args: argparse.Namespace, records: list[dict], persis
     actual_kernels.extend(record.get("actual_kernel") for _, record in persistent_runs)
 
     if args.persistent_only:
-        missing = [index for index, value in enumerate(actual_kernels) if value not in {"scalar", "threadgroup"}]
+        missing = [index for index, value in enumerate(actual_kernels) if value not in {"scalar", "threadgroup", "threadgroup128"}]
         if missing:
             raise SystemExit("--persistent-only requires every persistent Metal run to report a concrete actual_kernel")
 
     if args.kernel == "auto":
-        missing = [index for index, value in enumerate(actual_kernels) if value not in {"scalar", "threadgroup"}]
+        missing = [index for index, value in enumerate(actual_kernels) if value not in {"scalar", "threadgroup", "threadgroup128"}]
         if missing:
             raise SystemExit("requested --kernel auto but at least one Metal run did not report a concrete actual_kernel")
         if len(set(actual_kernels)) != 1:

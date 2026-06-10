@@ -48,8 +48,14 @@ static bool nn_logits_kernel_is_auto(const char *kernel_name) {
     return strcmp(kernel_name, "auto") == 0;
 }
 
+static NSUInteger nn_logits_kernel_threadgroup_width(const char *kernel_name) {
+    if (strcmp(kernel_name, "logits_matmul_tg") == 0) return 256;
+    if (strcmp(kernel_name, "logits_matmul_tg128") == 0) return 128;
+    return 0;
+}
+
 static bool nn_logits_kernel_is_threadgroup(const char *kernel_name) {
-    return strcmp(kernel_name, "logits_matmul_tg") == 0;
+    return nn_logits_kernel_threadgroup_width(kernel_name) != 0;
 }
 
 typedef struct NnLogitsDispatchConfig {
@@ -61,7 +67,7 @@ typedef struct NnLogitsDispatchConfig {
 
 static int nn_make_logits_dispatch_config(
     id<MTLComputePipelineState> pipeline,
-    bool threadgroup_kernel,
+    NSUInteger fixed_threadgroup_width,
     uint32_t rows,
     NnLogitsDispatchConfig *out_config,
     char *err,
@@ -71,17 +77,17 @@ static int nn_make_logits_dispatch_config(
     NSUInteger threads_per_group = [pipeline maxTotalThreadsPerThreadgroup];
     if (threads_per_group > 256) threads_per_group = 256;
     if (threads_per_group == 0) threads_per_group = 1;
-    if (threadgroup_kernel && threads_per_group < 256) {
-        nn_set_error(err, err_len, "logits_matmul_tg requires at least 256 threads per threadgroup");
+    if (fixed_threadgroup_width != 0 && threads_per_group < fixed_threadgroup_width) {
+        nn_set_error(err, err_len, "threadgroup logits kernel requires at least %lu threads per threadgroup", (unsigned long)fixed_threadgroup_width);
         return threadgroup_error_code;
     }
     if (threads_per_group > rows) threads_per_group = rows;
-    if (threadgroup_kernel) threads_per_group = 256;
+    if (fixed_threadgroup_width != 0) threads_per_group = fixed_threadgroup_width;
 
     out_config->threads_per_group = threads_per_group;
     out_config->threadgroup_size = MTLSizeMake(threads_per_group, 1, 1);
     out_config->grid_size = MTLSizeMake(rows, 1, 1);
-    out_config->threadgroup_kernel = threadgroup_kernel;
+    out_config->threadgroup_kernel = fixed_threadgroup_width != 0;
     return 0;
 }
 
@@ -123,7 +129,8 @@ static void nn_fill_benchmark_result(
 }
 
 static const char *nn_logits_kernel_label(const char *kernel_name) {
-    if (nn_logits_kernel_is_threadgroup(kernel_name)) return "threadgroup";
+    if (strcmp(kernel_name, "logits_matmul_tg") == 0) return "threadgroup";
+    if (strcmp(kernel_name, "logits_matmul_tg128") == 0) return "threadgroup128";
     return "scalar";
 }
 
@@ -349,7 +356,7 @@ int nn_metal_run_logits_matmul(
         id<MTLComputePipelineState> pipeline = nil;
         int pipeline_rc = nn_create_logits_pipeline(device, library, selected_kernel, &pipeline, &selected_kernel, err, err_len, 23, 24);
         if (pipeline_rc != 0) return pipeline_rc;
-        const bool threadgroup_kernel = nn_logits_kernel_is_threadgroup(selected_kernel);
+        const NSUInteger fixed_threadgroup_width = nn_logits_kernel_threadgroup_width(selected_kernel);
         nn_fill_probe(device, pipeline, out_probe);
 
         const NSUInteger hidden_bytes = (NSUInteger)cols * sizeof(float);
@@ -402,7 +409,7 @@ int nn_metal_run_logits_matmul(
         [encoder setBuffer:dims_buffer offset:0 atIndex:3];
 
         NnLogitsDispatchConfig dispatch_config;
-        int dispatch_rc = nn_make_logits_dispatch_config(pipeline, threadgroup_kernel, rows, &dispatch_config, err, err_len, 28);
+        int dispatch_rc = nn_make_logits_dispatch_config(pipeline, fixed_threadgroup_width, rows, &dispatch_config, err, err_len, 28);
         if (dispatch_rc != 0) return dispatch_rc;
 
         CFAbsoluteTime start_time = CFAbsoluteTimeGetCurrent();
@@ -474,7 +481,7 @@ int nn_metal_benchmark_logits_matmul_persistent(
         id<MTLComputePipelineState> pipeline = nil;
         int pipeline_rc = nn_create_logits_pipeline(device, library, selected_kernel, &pipeline, &selected_kernel, err, err_len, 33, 34);
         if (pipeline_rc != 0) return pipeline_rc;
-        const bool threadgroup_kernel = nn_logits_kernel_is_threadgroup(selected_kernel);
+        const NSUInteger fixed_threadgroup_width = nn_logits_kernel_threadgroup_width(selected_kernel);
         nn_fill_probe(device, pipeline, out_probe);
 
         const NSUInteger hidden_bytes = (NSUInteger)cols * sizeof(float);
@@ -519,7 +526,7 @@ int nn_metal_benchmark_logits_matmul_persistent(
         }
 
         NnLogitsDispatchConfig dispatch_config;
-        int dispatch_rc = nn_make_logits_dispatch_config(pipeline, threadgroup_kernel, rows, &dispatch_config, err, err_len, 39);
+        int dispatch_rc = nn_make_logits_dispatch_config(pipeline, fixed_threadgroup_width, rows, &dispatch_config, err, err_len, 39);
         if (dispatch_rc != 0) return dispatch_rc;
         CFAbsoluteTime setup_end = CFAbsoluteTimeGetCurrent();
 
@@ -609,7 +616,7 @@ int nn_metal_benchmark_logits_matmul_persistent_batched(
         id<MTLComputePipelineState> pipeline = nil;
         int pipeline_rc = nn_create_logits_pipeline(device, library, selected_kernel, &pipeline, &selected_kernel, err, err_len, 43, 44);
         if (pipeline_rc != 0) return pipeline_rc;
-        const bool threadgroup_kernel = nn_logits_kernel_is_threadgroup(selected_kernel);
+        const NSUInteger fixed_threadgroup_width = nn_logits_kernel_threadgroup_width(selected_kernel);
         nn_fill_probe(device, pipeline, out_probe);
 
         const NSUInteger hidden_bytes = (NSUInteger)cols * sizeof(float);
@@ -654,7 +661,7 @@ int nn_metal_benchmark_logits_matmul_persistent_batched(
         }
 
         NnLogitsDispatchConfig dispatch_config;
-        int dispatch_rc = nn_make_logits_dispatch_config(pipeline, threadgroup_kernel, rows, &dispatch_config, err, err_len, 49);
+        int dispatch_rc = nn_make_logits_dispatch_config(pipeline, fixed_threadgroup_width, rows, &dispatch_config, err, err_len, 49);
         if (dispatch_rc != 0) return dispatch_rc;
         CFAbsoluteTime setup_end = CFAbsoluteTimeGetCurrent();
 

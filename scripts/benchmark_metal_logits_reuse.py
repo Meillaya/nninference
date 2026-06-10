@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 
-CONCRETE_KERNELS = {"scalar", "threadgroup"}
+CONCRETE_KERNELS = {"scalar", "threadgroup", "threadgroup128"}
 VALID_KERNELS = CONCRETE_KERNELS | {"auto"}
 
 
@@ -96,7 +96,7 @@ def requested_kernels(args: argparse.Namespace) -> list[str]:
         raise SystemExit("--kernels must contain at least one kernel")
     invalid = [kernel for kernel in kernels if kernel not in VALID_KERNELS]
     if invalid:
-        expected = "scalar, threadgroup, or auto"
+        expected = "scalar, threadgroup, threadgroup128, or auto"
         raise SystemExit(f"--kernels contains unsupported kernel(s): {invalid}; expected {expected}")
     return kernels
 

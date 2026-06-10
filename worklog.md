@@ -1124,3 +1124,49 @@
   - Default wrapper full benchmark kept top-level `compare_mode="full"`, `benchmark_command_mode="per_iter"`, scalar/copy defaults, top-1/top-20 true, and `mismatches=0`; CPU numpy mismatches remained `0`.
   - HF bridge alignment remained intact for all three required prompts with max absolute logit diff `0.0`; sampling smoke remained `temperature=0.6`, `top_p=0.95`, `top_k=20`, candidate count `20`, selected token `353`.
 - Decision: keep G080 as measurement hardening, not a throughput/default change. The post-G079 data does not justify promoting batched command mode or changing kernels/defaults; the safest next optimization should either collect more boundary evidence or create an explicitly opt-in kernel/layout variant with the full correctness matrix.
+
+## 2026-06-10 Resumed ultragoal G081 — Explicit opt-in `threadgroup128` Metal LM-head kernel
+- Goal: investigate a small reversible LM-head kernel/layout variant after G079 removed host top-k overhead and G080 showed command-mode batching was effectively tied. Scope was intentionally kernel-only: preserve the current row-major fixture/bridge ABI, keep `scalar`/`threadgroup`/default behavior unchanged, keep full comparison as the correctness path, and do not add the new kernel to `auto`.
+- Implemented changes:
+  - Added `logits_matmul_tg128` in `metal/vector_add.metal`, using the same buffers and dimensions as existing LM-head kernels but a fixed `threadgroup float partial[128]` reduction.
+  - Updated `src/metal_bridge.m` to derive fixed threadgroup width from the selected kernel name (`logits_matmul_tg` = 256, `logits_matmul_tg128` = 128), report `actual_kernel="threadgroup128"`, and keep `auto` probing only the existing `logits_matmul_tg` path.
+  - Updated `src/metal_logits_test.zig` and the benchmark scripts to accept `threadgroup128` as an explicit kernel choice and as a concrete benchmark result. Defaults remain `kernel=scalar`, `buffer_mode=copy`, `compare_mode=full`, `benchmark_command_mode=per_iter`.
+  - Fixed reviewer feedback by documenting `--matrix-kernels scalar,threadgroup,threadgroup128` in CLI help.
+- Initial rollback-safe finding:
+  - First direct run failed safely with `Metal function logits_matmul_tg128 not found` because the metallib had not been rebuilt after editing the Metal source. Rebuilt via `zig build -Denable-metal=true metal-lib`; no source rollback was needed.
+- Targeted correctness evidence:
+  - `zig build -Denable-metal=true metal-logits-test -- --kernel threadgroup128 --compare-mode full` passed on the tiny fixture with `actual_kernel="threadgroup128"`, `mismatches=0`, `top1_match=true`, and `top20_set_match=true`.
+  - `./zig-out/bin/metal_logits_v1 zig-out/metal/kernels.metallib --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk --kernel threadgroup128 --buffer-mode nocopy --kernel-repeats 2 --compare-mode full > artifacts/benchmarks/g081_tg128/direct_tg128_full.json` passed with expected/actual top-1 `353`, top-20 set match true, `mismatches=0`, and `max_abs_diff=1.9073486e-06`.
+  - Explicit control rows passed for `scalar`/nocopy/full, `threadgroup`/nocopy/full, `threadgroup128`/copy/full, and `threadgroup128`/nocopy/full. Default direct and wrapper benchmarks continued to report `scalar` + `copy` + `full`.
+- Medium-confidence benchmark evidence:
+  - `uv run python scripts/benchmark_metal_command_modes.py --no-build --samples 7 --kernel-repeats 5 --benchmark-iters 10 --kernels scalar,threadgroup,threadgroup128 --buffer-mode nocopy --compare-mode full --out artifacts/benchmarks/g081_tg128/command_modes_full_samples7.json --artifact-dir artifacts/benchmarks/g081_tg128/command_modes_full_samples7_runs`
+  - Report verdict was `pass`, with `failure_reasons=[]`, 7 samples per command mode, full comparison enabled, no mismatches, and all rows using actual no-copy buffers.
+  - Per-iteration command mode medians (`persistent_ms_per_kernel_repeat`): `threadgroup128/nocopy` `11.053202152252197 ms`, `threadgroup/nocopy` `11.297159194946289 ms`, `scalar/nocopy` `12.752439975738525 ms`.
+  - Batched command mode medians: `threadgroup/nocopy` `11.027159690856934 ms`, `threadgroup128/nocopy` `11.156580448150635 ms`, `scalar/nocopy` `12.585217952728271 ms`.
+  - Decision: keep `threadgroup128` as an opt-in comparison kernel because correctness is intact and it wins the per-iter median by ~2.2%, but do **not** promote it to `auto` or any default because it does not beat the best existing concrete kernel by the ≥5% threshold in both per-iter and batched modes.
+- Full verification commands:
+  - `zig fmt --check build.zig src/main.zig src/metal_logits_test.zig src/metal_smoke.zig`
+  - `python3 -m py_compile scripts/benchmark_metal_logits.py scripts/benchmark_metal_logits_reuse.py scripts/benchmark_metal_command_modes.py scripts/benchmark_metal_logits_matrix.py scripts/run_alignment_tests.py`
+  - `zig build`
+  - `zig build -Dtarget=x86_64-linux --summary all`
+  - `zig build -Denable-metal=true metal-lib`
+  - `zig build -Denable-metal=true metal-smoke`
+  - `zig build -Denable-metal=true metal-logits-test -- --kernel threadgroup128 --compare-mode full`
+  - `zig build -Denable-metal=true metal-logits-test -- --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk --kernel threadgroup128 --buffer-mode nocopy --kernel-repeats 2 --compare-mode full > artifacts/benchmarks/g081_tg128/full_gate_threadgroup128_nocopy_full.json`
+  - `zig build -Denable-metal=true metal-logits-test -- --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk --kernel threadgroup128 --buffer-mode nocopy --kernel-repeats 2 --compare-mode topk > artifacts/benchmarks/g081_tg128/full_gate_threadgroup128_nocopy_topk.json`
+  - `zig build -Denable-metal=true metal-logits-test -- --fixture artifacts/metal/gate3/full_hi/fixture.bin --expect-topk --kernel-repeats 2 > artifacts/benchmarks/g081_tg128/default_periodic_gate.json`
+  - `uv run python scripts/run_alignment_tests.py`
+  - `uv run python scripts/benchmark_metal_logits.py --no-build --warmup 1 --repeats 2 --cpu-repeats 1 --kernel-repeats 5 --out artifacts/benchmarks/g081_tg128/default_periodic_benchmark.json`
+- Full verification results:
+  - Linux cross build succeeded with `Build Summary: 3/3 steps succeeded`.
+  - Metal smoke reported `mismatches=0`.
+  - Full-vocab `threadgroup128`/nocopy/full retained top-1/top-20 correctness with expected/actual top-1 `353`, `mismatches=0`, and `actual_kernel="threadgroup128"`.
+  - Top-k diagnostic mode retained top-1/top-20 correctness for `threadgroup128`/nocopy.
+  - Default periodic Metal gate and wrapper benchmark remained `scalar`/`copy`/`full` with `mismatches=0`, `top1_match=true`, `top20_set_match=true`, and CPU numpy mismatches `0`.
+  - HF bridge alignment remained intact for all three required prompts with max absolute logit diff `0.0`; sampling smoke remained `temperature=0.6`, `top_p=0.95`, `top_k=20`, candidate count `20`, selected token `353`.
+- Subagent evidence:
+  - Architect approved a kernel-only opt-in variant and rejected a true fixture/layout rewrite as too broad for G081.
+  - Test-engineer defined the G081 validation matrix used for defaults, explicit controls, full fixture, HF alignment, and medium-confidence performance ranking.
+  - Verifier returned `APPROVE / PASS`, citing default scalar/copy/full coverage, HF alignment evidence, explicit `threadgroup128` correctness, and valid JSON artifacts.
+  - Code-reviewer returned `APPROVE` after the help-text fix, with no findings; it verified opt-in-only scope, fixed-width dispatch, actual-kernel reporting, benchmark validators, and CLI/script help.
+- Decision: keep the opt-in kernel and benchmark plumbing. Do not change defaults or auto-selection. Next work should either probe a more meaningful threadgroup128-friendly kernel/layout refinement with strict rollback criteria, or document no-change if variants stay within noise.
