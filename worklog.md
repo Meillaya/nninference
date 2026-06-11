@@ -1503,3 +1503,38 @@
   - `uv run python -m unittest discover -s tests -p 'test_*.py'` — 16 tests OK.
   - Pure LOC: `scripts/autoptimize_loop.py` 180, `tests/test_autoptimize_loop.py` 75.
 - Next action: launch the 3h run in tmux so it continues independently and records artifacts under `artifacts/optimization/<run-id>/`.
+
+## 2026-06-11 Follow-up — completed 3h optimization run check
+- Checked the live 3h run launched as `opt-3h-20260610T235033Z` under `artifacts/optimization/opt-3h-20260610T235033Z/`.
+- Result: the run completed successfully; `manifest.json` reports `status=complete`, `iterations_completed=31`, `budget_seconds=10800`, and elapsed `10800.011835813522` seconds.
+- The tmux session `nninf-opt-3h-20260610T235033Z` was no longer alive after completion, and `tmux.log` ended with a terminal complete summary.
+- Event ledger evidence:
+  - `queued`: 1
+  - `baseline`: 1
+  - `experiment`: 31
+  - `command`: 124
+  - `verify`: 31
+  - `checkpoint`: 31
+  - `heartbeat`: 31
+  - `complete`: 1
+- Checkpoint evidence: `checkpoints/last_green.json` points to iteration `31` with `status=checkpoint`.
+- Every iteration directory `0001` through `0031` recorded `status=pass` and all four commands exited 0:
+  - `zig build`
+  - `uv run python scripts/run_alignment_tests.py`
+  - `uv run python scripts/benchmark_bridge.py --warmup 0 --repeats 1`
+  - `uv run python scripts/benchmark_metal_logits_reuse.py --no-build --samples 1 --kernels scalar,threadgroup,threadgroup128 --buffer-mode copy --compare-mode topk --kernel-repeats 3 --benchmark-iters 4 --out .../metal_reuse.json`
+- Command timing summary across 31 iterations:
+  - `zig build`: min `0.088s`, median `0.261s`, max `0.446s`.
+  - alignment tests: min `28.717s`, median `29.955s`, max `47.935s`.
+  - bridge benchmark: min `14.605s`, median `15.476s`, max `26.685s`.
+  - Metal logits reuse benchmark: min `1.991s`, median `2.164s`, max `2.912s`.
+- Metal logits reuse result summary:
+  - `threadgroup128` was fastest in 20/31 iterations, median `13.765 ms` per kernel repeat, best observed `11.491 ms` at iteration 12.
+  - `threadgroup` was fastest in 8/31 iterations, median `14.788 ms` per kernel repeat.
+  - `scalar` was fastest in 3/31 iterations, median `16.485 ms` per kernel repeat.
+- Wrote a concise result-check artifact: `artifacts/optimization/opt-3h-20260610T235033Z/reports/result_check.md`.
+- Comparator boundary: the latest LM Studio live benchmark remains `artifacts/benchmarks/lmstudio-live-20260610T232837Z` with median TTFT `0.0946s` and median post-TTFT throughput `91.83 tok/s`; the 3h loop did not re-run LM Studio live comparisons.
+- Known gaps:
+  - This 3h pass was a validation/benchmark loop; it did not autonomously edit and promote new code changes during the run.
+  - `scripts/benchmark_bridge.py` still writes its detailed JSON to the global `artifacts/benchmarks/bridge_baseline.json`, so per-iteration bridge details are represented in command tails/timings rather than separate per-iteration JSON files.
+  - The LM Studio live comparator was not part of the repeated 3h loop command set.
