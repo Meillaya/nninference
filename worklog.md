@@ -1538,3 +1538,22 @@
   - This 3h pass was a validation/benchmark loop; it did not autonomously edit and promote new code changes during the run.
   - `scripts/benchmark_bridge.py` still writes its detailed JSON to the global `artifacts/benchmarks/bridge_baseline.json`, so per-iteration bridge details are represented in command tails/timings rather than separate per-iteration JSON files.
   - The LM Studio live comparator was not part of the repeated 3h loop command set.
+
+## 2026-06-12 - Publishing metadata cleanup
+
+Goal: prepare the repository for publishing with source-oriented ignore rules and a brief top-level README, without changing runtime behavior.
+
+Changes:
+- Added `README.md` describing the project scope, layout, setup, usage, verification commands, optional Metal checks, and publishing notes.
+- Updated `.gitignore` to keep local cache/editor noise and generated Metal compiler outputs out of git while preserving source files.
+
+Verification:
+- RED proof before edit: `test -f README.md` exited `1`; `git check-ignore` reported `.cache/uv`, `metal/kernels.metallib`, `metal/vector_add.air`, `coverage.xml`, and `.idea/workspace.xml` as not ignored.
+- GREEN proof after edit: `git check-ignore` reports ignored for `.cache/uv`, `metal/kernels.metallib`, `metal/vector_add.air`, `coverage.xml`, `.idea/workspace.xml`, `.venv/bin/python`, `.zig-cache/o/foo`, `zig-out/bin/infer_cpu_v1`, `artifacts/alignment/report.json`, and `Qwen3.5-0.8B/config.json`.
+- `zig build` exited 0.
+- `python3 -m py_compile scripts/*.py` exited 0.
+- `git ls-files` generated-file scan found no tracked model snapshot, artifact, Zig cache/output, venv, pycache, Metal output, binary, or log files.
+
+Known gaps:
+- No commit was created during the ultrawork step; commit/push was requested afterward.
+- Full Hugging Face alignment was not rerun because this was a docs/gitignore-only publishing cleanup with no inference behavior change.
