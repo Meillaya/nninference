@@ -1576,3 +1576,19 @@ Verification:
 
 Known gaps:
 - Commit signing remains unavailable locally until the configured GPG secret key is installed or signing config is changed.
+
+## 2026-06-12 - Remove local OMO state from public git tracking
+
+Goal: ignore `.omo/` and remove already-tracked OMO planning/evidence state from the public remote while preserving the local working copy.
+
+Actions:
+- Added `.omo/` to `.gitignore` beside `.omx/` local runtime state.
+- Ran `git rm -r --cached .omo` so `.omo/` is deleted from git tracking but remains present locally.
+
+Verification:
+- Before cleanup, `git ls-files .omo | wc -l` reported 42 tracked files and `git ls-tree -d origin/main .omo` showed `.omo` on the remote tree.
+- After cleanup, `find .omo -type f | wc -l` still reported 42 local files.
+- `git check-ignore -v .omo/ulw-loop/inference-opt-harness/ledger.jsonl .omo/new-local-file.md` matched `.gitignore`.
+
+Known gaps:
+- Remote removal is verified after commit and push.

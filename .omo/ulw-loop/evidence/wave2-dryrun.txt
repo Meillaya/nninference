@@ -1,5 +1,0 @@
-{
-  "run_id": "wave2",
-  "run_dir": "artifacts/optimization/wave2",
-  "status": "pass"
-}

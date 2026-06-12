@@ -24,8 +24,9 @@ Thumbs.db
 *.swp
 *.swo
 
-# Local OMX runtime state
+# Local agent/runtime state
 .omx/
+.omo/
 
 # Downloaded Hugging Face model snapshots and generated test artifacts
 Qwen3.5-0.8B/
