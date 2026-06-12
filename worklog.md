@@ -1557,3 +1557,22 @@ Verification:
 Known gaps:
 - No commit was created during the ultrawork step; commit/push was requested afterward.
 - Full Hugging Face alignment was not rerun because this was a docs/gitignore-only publishing cleanup with no inference behavior change.
+
+## 2026-06-12 - Public GitHub publication
+
+Goal: commit the publishing metadata cleanup, create a new public remote repository, and push the source-first repository state.
+
+Actions:
+- Created commit `8e78617` (`Make the repository safe to publish`) with signing disabled for that command because the configured GPG signing key was unavailable in this environment.
+- Created public GitHub repository `Meillaya/nninference` at `https://github.com/Meillaya/nninference`.
+- Pushed the repository to `origin/main` and set GitHub's default branch to `main`.
+- Removed the duplicate workflow-named remote branch after confirming `main` pointed to the same commit, then aligned the local branch to track `origin/main`.
+
+Verification:
+- `gh auth status` reported an authenticated `Meillaya` account with repo scope.
+- `gh repo view Meillaya/nninference --json nameWithOwner,visibility,url,defaultBranchRef` reported `visibility=PUBLIC` and `defaultBranch=main`.
+- `git ls-remote --heads origin` showed `refs/heads/main` at `8e78617f51b948de2e0ed80ae70905e582a7cbba` before this receipt commit.
+- Local `main` tracked `origin/main`, and local/remote HEADs matched before this receipt commit.
+
+Known gaps:
+- Commit signing remains unavailable locally until the configured GPG secret key is installed or signing config is changed.
